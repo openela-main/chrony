@@ -1,0 +1,38 @@
+diff -up chrony-4.2/examples/chronyd.service.services chrony-4.2/examples/chronyd.service
+--- chrony-4.2/examples/chronyd.service.services	2021-12-16 13:17:42.000000000 +0100
++++ chrony-4.2/examples/chronyd.service	2022-01-19 13:55:59.066677473 +0100
+@@ -32,8 +32,7 @@ ProtectKernelLogs=yes
+ ProtectKernelModules=yes
+ ProtectKernelTunables=yes
+ ProtectProc=invisible
+-ProtectSystem=strict
+-ReadWritePaths=/run /var/lib/chrony -/var/log
++ProtectSystem=full
+ RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ RestrictNamespaces=yes
+ RestrictSUIDSGID=yes
+@@ -42,7 +41,6 @@ SystemCallFilter=~@cpu-emulation @debug
+ 
+ # Adjust restrictions for /usr/sbin/sendmail (mailonchange directive)
+ NoNewPrivileges=no
+-ReadWritePaths=-/var/spool
+ RestrictAddressFamilies=AF_NETLINK
+ 
+ [Install]
+
+Avoid a SELinux issue
+
+diff --git a/examples/chrony-wait.service b/examples/chrony-wait.service
+index 72b028f2..57646950 100644
+--- a/examples/chrony-wait.service
++++ b/examples/chrony-wait.service
+@@ -18,7 +18,7 @@ StandardOutput=null
+ 
+ CapabilityBoundingSet=
+ DevicePolicy=closed
+-DynamicUser=yes
++#DynamicUser=yes
+ IPAddressAllow=localhost
+ IPAddressDeny=any
+ LockPersonality=yes
+
