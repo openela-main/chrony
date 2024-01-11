@@ -1,0 +1,108 @@
+commit 33a1fe7a9ce223d6287ab7b11bca3208e9255cdd
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Wed Mar 9 15:30:16 2022 +0100
+
+    ntp: split out conf_id allocation
+
+diff --git a/ntp_sources.c b/ntp_sources.c
+index 3cbb2ae7..30770825 100644
+--- a/ntp_sources.c
++++ b/ntp_sources.c
+@@ -698,21 +698,25 @@ static int get_unused_pool_id(void)
+ 
+ /* ================================================== */
+ 
+-NSR_Status
+-NSR_AddSource(NTP_Remote_Address *remote_addr, NTP_Source_Type type,
+-              SourceParameters *params, uint32_t *conf_id)
++static uint32_t
++get_next_conf_id(uint32_t *conf_id)
+ {
+-  NSR_Status s;
+-
+-  s = add_source(remote_addr, NULL, type, params, INVALID_POOL, last_conf_id + 1);
+-  if (s != NSR_Success)
+-    return s;
+-
+   last_conf_id++;
++
+   if (conf_id)
+     *conf_id = last_conf_id;
+ 
+-  return s;
++  return last_conf_id;
++}
++
++/* ================================================== */
++
++NSR_Status
++NSR_AddSource(NTP_Remote_Address *remote_addr, NTP_Source_Type type,
++              SourceParameters *params, uint32_t *conf_id)
++{
++  return add_source(remote_addr, NULL, type, params, INVALID_POOL,
++                    get_next_conf_id(conf_id));
+ }
+ 
+ /* ================================================== */
+@@ -725,6 +729,7 @@ NSR_AddSourceByName(char *name, int port, int pool, NTP_Source_Type type,
+   struct SourcePool *sp;
+   NTP_Remote_Address remote_addr;
+   int i, new_sources, pool_id;
++  uint32_t cid;
+ 
+   /* If the name is an IP address, add the source with the address directly */
+   if (UTI_StringToIP(name, &remote_addr.ip_addr)) {
+@@ -770,14 +775,12 @@ NSR_AddSourceByName(char *name, int port, int pool, NTP_Source_Type type,
+ 
+   append_unresolved_source(us);
+ 
+-  last_conf_id++;
+-  if (conf_id)
+-    *conf_id = last_conf_id;
++  cid = get_next_conf_id(conf_id);
+ 
+   for (i = 0; i < new_sources; i++) {
+     if (i > 0)
+       remote_addr.ip_addr.addr.id = ++last_address_id;
+-    if (add_source(&remote_addr, name, type, params, us->pool_id, last_conf_id) != NSR_Success)
++    if (add_source(&remote_addr, name, type, params, us->pool_id, cid) != NSR_Success)
+       return NSR_TooManySources;
+   }
+ 
+
+commit 1219f99935ca9597eb0e4f4c6039e536462cf1a6
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Wed Mar 9 15:34:16 2022 +0100
+
+    ntp: keep original source IP address
+    
+    When an added source is specified by IP address, save the original
+    string instead of formatting a new string from the parsed address, which
+    can be different (e.g. compressed vs expanded IPv6 address).
+    
+    This fixes the chronyc sourcename command and -N option to print the IP
+    address exactly as it was specified in the configuration file or chronyc
+    add command.
+
+diff --git a/ntp_sources.c b/ntp_sources.c
+index 30770825..d46c211d 100644
+--- a/ntp_sources.c
++++ b/ntp_sources.c
+@@ -353,7 +353,6 @@ add_source(NTP_Remote_Address *remote_addr, char *name, NTP_Source_Type type,
+       record_lock = 1;
+ 
+       record = get_record(slot);
+-      assert(!name || !UTI_IsStringIP(name));
+       record->name = Strdup(name ? name : UTI_IPToString(&remote_addr->ip_addr));
+       record->data = NCR_CreateInstance(remote_addr, type, params, record->name);
+       record->remote_addr = NCR_GetRemoteAddress(record->data);
+@@ -734,7 +733,8 @@ NSR_AddSourceByName(char *name, int port, int pool, NTP_Source_Type type,
+   /* If the name is an IP address, add the source with the address directly */
+   if (UTI_StringToIP(name, &remote_addr.ip_addr)) {
+     remote_addr.port = port;
+-    return NSR_AddSource(&remote_addr, type, params, conf_id);
++    return add_source(&remote_addr, name, type, params, INVALID_POOL,
++                      get_next_conf_id(conf_id));
+   }
+ 
+   /* Make sure the name is at least printable and has no spaces */
