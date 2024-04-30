@@ -1,0 +1,39 @@
+commit e11b518a1ffa704986fb1f1835c425844ba248ef
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Mon Jan 8 11:35:56 2024 +0100
+
+    ntp: fix authenticated requests in serverstats
+    
+    Fix the CLG_UpdateNtpStats() call to count requests passing the
+    authentication check instead of requests triggering a KoD response
+    (i.e. NTS NAK).
+
+diff --git a/ntp_core.c b/ntp_core.c
+index 023e60b2..35801744 100644
+--- a/ntp_core.c
++++ b/ntp_core.c
+@@ -2736,7 +2736,7 @@ NCR_ProcessRxUnknown(NTP_Remote_Address *remote_addr, NTP_Local_Address *local_a
+       CLG_DisableNtpTimestamps(&ntp_rx);
+   }
+ 
+-  CLG_UpdateNtpStats(kod != 0 && info.auth.mode != NTP_AUTH_NONE &&
++  CLG_UpdateNtpStats(kod == 0 && info.auth.mode != NTP_AUTH_NONE &&
+                      info.auth.mode != NTP_AUTH_MSSNTP,
+                      rx_ts->source, interleaved ? tx_ts->source : NTP_TS_DAEMON);
+ 
+diff --git a/test/system/010-nts b/test/system/010-nts
+index 8d92bbc8..b215efa3 100755
+--- a/test/system/010-nts
++++ b/test/system/010-nts
+@@ -45,6 +45,11 @@ check_chronyc_output "^Name/IP address             Mode KeyID Type KLen Last Atm
+ =========================================================================
+ 127\.0\.0\.1                    NTS     1   (30|15)  (128|256)    [0-9]    0    0    [78]  ( 64|100)$" || test_fail
+ 
++run_chronyc "serverstats" || test_fail
++check_chronyc_output "NTS-KE connections accepted: 1
++NTS-KE connections dropped : 0
++Authenticated NTP packets  : [1-9][0-9]*" || test_fail
++
+ stop_chronyd || test_fail
+ check_chronyd_messages || test_fail
+ check_chronyd_files || test_fail

@@ -1,5 +1,5 @@
 %global _hardened_build 1
-%global clknetsim_ver f00531
+%global clknetsim_ver 5d1dc0
 %bcond_without debug
 %bcond_without nts
 
@@ -8,25 +8,29 @@
 %endif
 
 Name:           chrony
-Version:        4.3
+Version:        4.5
 Release:        1%{?dist}
 Summary:        An NTP client/server
 
 License:        GPLv2
-URL:            https://chrony.tuxfamily.org
-Source0:        https://download.tuxfamily.org/chrony/chrony-%{version}%{?prerelease}.tar.gz
-Source1:        https://download.tuxfamily.org/chrony/chrony-%{version}%{?prerelease}-tar-gz-asc.txt
-Source2:        https://chrony.tuxfamily.org/gpgkey-8F375C7E8D0EE125A3D3BD51537E2B76F7680DAC.asc
+URL:            https://chrony-project.org
+Source0:        https://chrony-project.org/releases/chrony-%{version}%{?prerelease}.tar.gz
+Source1:        https://chrony-project.org/releases/chrony-%{version}%{?prerelease}-tar-gz-asc.txt
+Source2:        https://chrony-project.org/gpgkey-8F375C7E8D0EE125A3D3BD51537E2B76F7680DAC.asc
 Source3:        chrony.dhclient
 Source4:        chrony.sysusers
 # simulator for test suite
-Source10:       https://github.com/mlichvar/clknetsim/archive/%{clknetsim_ver}/clknetsim-%{clknetsim_ver}.tar.gz
+Source10:       https://gitlab.com/chrony/clknetsim/-/archive/master/clknetsim-%{clknetsim_ver}.tar.gz
 %{?gitpatch:Patch0: chrony-%{version}%{?prerelease}-%{gitpatch}.patch.gz}
 
 # add distribution-specific bits to DHCP dispatcher
 Patch1:         chrony-nm-dispatcher-dhcp.patch
+# revert changes in packaged chrony.keys example
+Patch2:         chrony-keys.patch
 # revert some hardening options in service files
 Patch3:         chrony-services.patch
+# fix serverstats to correctly count authenticated packets
+Patch4:         chrony-serverstats.patch
 
 BuildRequires:  gnutls-devel libcap-devel libedit-devel pps-tools-devel
 BuildRequires:  gcc gcc-c++ make bison systemd gnupg2
@@ -58,19 +62,22 @@ service to other computers in the network.
 %setup -q -n %{name}-%{version}%{?prerelease} -a 10
 %{?gitpatch:%patch0 -p1}
 %patch1 -p1 -b .nm-dispatcher-dhcp
+%patch2 -p1 -b .keys
 %patch3 -p1 -b .services
+%patch4 -p1 -b .serverstats
 
 %{?gitpatch: echo %{version}-%{gitpatch} > version.txt}
 
 # review changes in packaged configuration files and scripts
 md5sum -c <<-EOF | (! grep -v 'OK$')
-        222e652b95027289877fa77146d3b9b1  examples/chrony-wait.service
+        d1e59feabc7847d30cfd09fd3c569f21  examples/chrony-wait.service
         2d01b94bc1a7b7fb70cbee831488d121  examples/chrony.conf.example2
         96999221eeef476bd49fe97b97503126  examples/chrony.keys.example
         6a3178c4670de7de393d9365e2793740  examples/chrony.logrotate
         c3992e2f985550739cd1cd95f98c9548  examples/chrony.nm-dispatcher.dhcp
-        2b81c60c020626165ac655b2633608eb  examples/chrony.nm-dispatcher.onoffline
-        619dd00009ea312c7201beefde10341a  examples/chronyd.service
+        4e85d36595727318535af3387411070c  examples/chrony.nm-dispatcher.onoffline
+        60447a26dce93b3a61f488a364ac46cd  examples/chronyd.service
+        46fa3e2d42c8eb9c42e71095686c90ed  examples/chronyd-restricted.service
 EOF
 
 # don't allow packaging without vendor zone
@@ -89,10 +96,14 @@ sed -e 's|^\(pool \)\(pool.ntp.org\)|\12.%{vendorzone}\2|' \
 
 touch -r examples/chrony.conf.example2 chrony.conf
 
+# set selinux context in chronyd-restricted service
+sed -i '/^ExecStart/a SELinuxContext=system_u:system_r:chronyd_restricted_t:s0' \
+	examples/chronyd-restricted.service
+
 # regenerate the file from getdate.y
 rm -f getdate.c
 
-mv clknetsim-%{clknetsim_ver}* test/simulation/clknetsim
+mv clknetsim-*-%{clknetsim_ver}* test/simulation/clknetsim
 
 %build
 %configure \
@@ -107,9 +118,7 @@ mv clknetsim-%{clknetsim_ver}* test/simulation/clknetsim
         --with-hwclockfile=%{_sysconfdir}/adjtime \
         --with-pidfile=/run/chrony/chronyd.pid \
         --with-sendmail=%{_sbindir}/sendmail \
-        --without-nettle \
-        --without-nss \
-        --without-tomcrypt
+        --without-nettle
 %make_build
 
 %install
@@ -136,6 +145,8 @@ install -m 644 -p examples/chrony.logrotate \
 
 install -m 644 -p examples/chronyd.service \
         $RPM_BUILD_ROOT%{_unitdir}/chronyd.service
+install -m 644 -p examples/chronyd-restricted.service \
+        $RPM_BUILD_ROOT%{_unitdir}/chronyd-restricted.service
 install -m 755 -p examples/chrony.nm-dispatcher.onoffline \
         $RPM_BUILD_ROOT%{_prefix}/lib/NetworkManager/dispatcher.d/20-chrony-onoffline
 install -m 755 -p examples/chrony.nm-dispatcher.dhcp \
@@ -176,13 +187,13 @@ if test -a %{_libexecdir}/chrony-helper; then
                 sed 's|.*|server &|' < $f > /run/chrony-dhcp/"${f##*servers.}.sources"
         done 2> /dev/null
 fi
-%systemd_post chronyd.service chrony-wait.service
+%systemd_post chronyd.service chronyd-restricted.service chrony-wait.service
 
 %preun
-%systemd_preun chronyd.service chrony-wait.service
+%systemd_preun chronyd.service chronyd-restricted.service chrony-wait.service
 
 %postun
-%systemd_postun_with_restart chronyd.service
+%systemd_postun_with_restart chronyd.service chronyd-restricted.service
 
 %files
 %{!?_licensedir:%global license %%doc}
@@ -206,6 +217,11 @@ fi
 %dir %attr(750,chrony,chrony) %{_localstatedir}/log/chrony
 
 %changelog
+* Tue Jan 09 2024 Miroslav Lichvar <mlichvar@redhat.com> 4.5-1
+- update to 4.5 (RHEL-6522 RHEL-6520 RHEL-9969 RHEL-9971 RHEL-9973 RHEL-9975
+  RHEL-12411)
+- add chronyd-restricted service (RHEL-9972)
+
 * Wed Oct 12 2022 Miroslav Lichvar <mlichvar@redhat.com> 4.3-1
 - update to 4.3 (#2133754)
 - add sysusers.d fragment for chrony user/group (#2095374)
