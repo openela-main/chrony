@@ -1,24 +1,24 @@
 %global _hardened_build 1
-%global clknetsim_ver 824c48
+%global clknetsim_ver 5d1dc0
 %global ntp2chrony_ver 233b75
 %bcond_without debug
 %bcond_without nts
 
 Name:           chrony
-Version:        4.2
+Version:        4.5
 Release:        1%{?dist}
 Summary:        An NTP client/server
 
 Group:          System Environment/Daemons
 License:        GPLv2
-URL:            https://chrony.tuxfamily.org
-Source0:        https://download.tuxfamily.org/chrony/chrony-%{version}%{?prerelease}.tar.gz
+URL:            https://chrony-project.org
+Source0:        https://chrony-project.org/releases/chrony-%{version}%{?prerelease}.tar.gz
 Source1:        chrony.dhclient
 Source2:        chrony.helper
 Source3:        chrony-dnssrv@.service
 Source4:        chrony-dnssrv@.timer
 # simulator for test suite
-Source10:       https://github.com/mlichvar/clknetsim/archive/%{clknetsim_ver}/clknetsim-%{clknetsim_ver}.tar.gz
+Source10:       https://gitlab.com/chrony/clknetsim/-/archive/master/clknetsim-%{clknetsim_ver}.tar.gz
 # script for converting ntp configuration to chrony
 Source11:       https://github.com/mlichvar/ntp2chrony/raw/%{ntp2chrony_ver}/ntp2chrony/ntp2chrony.py
 %{?gitpatch:Patch0: chrony-%{version}%{?prerelease}-%{gitpatch}.patch.gz}
@@ -30,10 +30,10 @@ Patch0:         chrony-services.patch
 Patch1:         chrony-nm-dispatcher-dhcp.patch
 # add NTP servers from DHCP when starting service
 Patch2:         chrony-service-helper.patch
-# revert upstream changes in packaged chrony.conf example
+# revert upstream changes in packaged configuration examples
 Patch3:         chrony-defconfig.patch
-# fix chronyc sourcename command to print IP address in original format
-Patch4:         chrony-ipsourcename.patch
+# fix serverstats to correctly count authenticated packets
+Patch4:         chrony-serverstats.patch
 
 BuildRequires:  libcap-devel libedit-devel nettle-devel pps-tools-devel
 %ifarch %{ix86} x86_64 %{arm} aarch64 mipsel mips64el ppc64 ppc64le s390 s390x
@@ -70,7 +70,7 @@ service to other computers in the network.
 %patch1 -p1 -b .nm-dispatcher-dhcp
 %patch2 -p1 -b .service-helper
 %patch3 -p1 -b .defconfig
-%patch4 -p1 -b .ipsourcename
+%patch4 -p1 -b .serverstats
 
 %{?gitpatch: echo %{version}-%{gitpatch} > version.txt}
 
@@ -81,7 +81,7 @@ md5sum -c <<-EOF | (! grep -v 'OK$')
         96999221eeef476bd49fe97b97503126  examples/chrony.keys.example
         6a3178c4670de7de393d9365e2793740  examples/chrony.logrotate
         fabb5b3f127b802c27c82837feff0fe6  examples/chrony.nm-dispatcher.dhcp
-        8f5a98fcb400a482d355b929d04b5518  examples/chrony.nm-dispatcher.onoffline
+        4e85d36595727318535af3387411070c  examples/chrony.nm-dispatcher.onoffline
         56d221eba8ce8a2e03d3e0dd87999a81  examples/chronyd.service
 EOF
 
@@ -102,7 +102,7 @@ touch -r examples/chrony.conf.example2 chrony.conf
 # regenerate the file from getdate.y
 rm -f getdate.c
 
-mv clknetsim-%{clknetsim_ver}* test/simulation/clknetsim
+mv clknetsim-*-%{clknetsim_ver}* test/simulation/clknetsim
 
 install -m 644 -p %{SOURCE11} ntp2chrony.py
 
@@ -219,6 +219,9 @@ fi
 %dir %attr(750,chrony,chrony) %{_localstatedir}/log/chrony
 
 %changelog
+* Wed Jan 10 2024 Miroslav Lichvar <mlichvar@redhat.com> 4.5-1
+- update to 4.5 (RHEL-21069 RHEL-10701)
+
 * Thu Jul 14 2022 Miroslav Lichvar <mlichvar@redhat.com> 4.2-1
 - update to 4.2 (#2062356)
 - fix chrony-helper to delete sources by their original name (#2061660)

@@ -2,7 +2,7 @@ diff --git a/examples/chrony-wait.service b/examples/chrony-wait.service
 index 72b028f2..b3aa7aa2 100644
 --- a/examples/chrony-wait.service
 +++ b/examples/chrony-wait.service
-@@ -16,32 +16,5 @@ TimeoutStartSec=180
+@@ -16,31 +16,5 @@ TimeoutStartSec=180
  RemainAfterExit=yes
  StandardOutput=null
  
@@ -15,7 +15,6 @@ index 72b028f2..b3aa7aa2 100644
 -MemoryDenyWriteExecute=yes
 -PrivateDevices=yes
 -PrivateUsers=yes
--ProcSubset=pid
 -ProtectClock=yes
 -ProtectControlGroups=yes
 -ProtectHome=yes
@@ -39,7 +38,7 @@ diff --git a/examples/chronyd.service b/examples/chronyd.service
 index 4fb930ef..289548cb 100644
 --- a/examples/chronyd.service
 +++ b/examples/chronyd.service
-@@ -10,40 +10,9 @@ Type=forking
+@@ -10,39 +10,9 @@ Type=forking
  PIDFile=/run/chrony/chronyd.pid
  EnvironmentFile=-/etc/sysconfig/chronyd
  ExecStart=/usr/sbin/chronyd $OPTIONS
@@ -57,7 +56,6 @@ index 4fb930ef..289548cb 100644
 -MemoryDenyWriteExecute=yes
 -NoNewPrivileges=yes
  PrivateTmp=yes
--ProcSubset=pid
 -ProtectControlGroups=yes
  ProtectHome=yes
 -ProtectHostname=yes
