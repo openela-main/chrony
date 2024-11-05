@@ -1,0 +1,56 @@
+commit 8eb5dd54efd13aa0209aea38dbad2a7904377f75
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Tue Sep 17 13:00:43 2024 +0200
+
+    configure: enable AES-CMAC using gnutls
+    
+    Allow gnutls to be used for AES-CMAC when nettle doesn't support it
+    without switching also hashing.
+
+diff --git a/configure b/configure
+index eefe5de8..0fb3aa38 100755
+--- a/configure
++++ b/configure
+@@ -937,14 +937,26 @@ if [ $feat_sechash = "1" ] && [ "x$HASH_LINK" = "x" ] && [ $try_gnutls = "1" ];
+     HASH_LINK="$test_link"
+     MYCPPFLAGS="$MYCPPFLAGS $test_cflags"
+     add_def FEAT_SECHASH
++  fi
++fi
+ 
+-    if test_code 'CMAC in gnutls' 'gnutls/crypto.h' "$test_cflags" "$test_link" \
+-      'return gnutls_hmac_init((void *)1, GNUTLS_MAC_AES_CMAC_128, (void *)2, 0);'
+-    then
+-      add_def HAVE_CMAC
+-      EXTRA_OBJECTS="$EXTRA_OBJECTS cmac_gnutls.o"
+-      EXTRA_CLI_OBJECTS="$EXTRA_CLI_OBJECTS cmac_gnutls.o"
+-    fi
++if [ $feat_sechash = "1" ] && [ $try_gnutls = "1" ] &&
++    ! grep '#define HAVE_CMAC' config.h > /dev/null; then
++  if [ "$HASH_OBJ" = "hash_gnutls.o" ]; then
++    test_cflags=""
++    test_link=""
++  else
++    test_cflags="`pkg_config --cflags gnutls`"
++    test_link="`pkg_config --libs gnutls`"
++  fi
++  if test_code 'CMAC in gnutls' 'gnutls/crypto.h' "$test_cflags" "$test_link" \
++    'return gnutls_hmac_init((void *)1, GNUTLS_MAC_AES_CMAC_128, (void *)2, 0);'
++  then
++    add_def HAVE_CMAC
++    EXTRA_OBJECTS="$EXTRA_OBJECTS cmac_gnutls.o"
++    EXTRA_CLI_OBJECTS="$EXTRA_CLI_OBJECTS cmac_gnutls.o"
++    LIBS="$LIBS $test_link"
++    MYCPPFLAGS="$MYCPPFLAGS $test_cflags"
+   fi
+ fi
+ 
+@@ -978,7 +990,7 @@ EXTRA_CLI_OBJECTS="$EXTRA_CLI_OBJECTS $HASH_OBJ"
+ LIBS="$LIBS $HASH_LINK"
+ 
+ if [ $feat_ntp = "1" ] && [ $feat_nts = "1" ] && [ $try_gnutls = "1" ]; then
+-  if [ "$HASH_OBJ" = "hash_gnutls.o" ]; then
++  if echo "$HASH_OBJ $EXTRA_OBJECTS" | grep "_gnutls\.o" > /dev/null; then
+     test_cflags=""
+     test_link=""
+   else

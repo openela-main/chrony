@@ -6,7 +6,7 @@
 
 Name:           chrony
 Version:        4.5
-Release:        1%{?dist}
+Release:        2%{?dist}
 Summary:        An NTP client/server
 
 Group:          System Environment/Daemons
@@ -34,6 +34,10 @@ Patch2:         chrony-service-helper.patch
 Patch3:         chrony-defconfig.patch
 # fix serverstats to correctly count authenticated packets
 Patch4:         chrony-serverstats.patch
+# fix crash on reload command during start
+Patch5:         chrony-reload.patch
+# enable AES-CMAC support using gnutls (but keep nettle for hashing)
+Patch6:         chrony-cmac.patch
 
 BuildRequires:  libcap-devel libedit-devel nettle-devel pps-tools-devel
 %ifarch %{ix86} x86_64 %{arm} aarch64 mipsel mips64el ppc64 ppc64le s390 s390x
@@ -71,6 +75,8 @@ service to other computers in the network.
 %patch2 -p1 -b .service-helper
 %patch3 -p1 -b .defconfig
 %patch4 -p1 -b .serverstats
+%patch5 -p1
+%patch6 -p1 -b .cmac
 
 %{?gitpatch: echo %{version}-%{gitpatch} > version.txt}
 
@@ -219,6 +225,10 @@ fi
 %dir %attr(750,chrony,chrony) %{_localstatedir}/log/chrony
 
 %changelog
+* Wed Sep 18 2024 Miroslav Lichvar <mlichvar@redhat.com> 4.5-2.el8_10
+- fix crash on reload command during start (RHEL-59112)
+- enable AES-CMAC support using gnutls (RHEL-59032)
+
 * Wed Jan 10 2024 Miroslav Lichvar <mlichvar@redhat.com> 4.5-1
 - update to 4.5 (RHEL-21069 RHEL-10701)
 

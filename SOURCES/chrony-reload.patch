@@ -1,0 +1,86 @@
+commit f49be7f06343ee27fff2950937d7f6742f53976f
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Tue Mar 12 14:30:27 2024 +0100
+
+    conf: don't load sourcedir during initstepslew and RTC init
+    
+    If the reload sources command was received in the chronyd start-up
+    sequence with initstepslew and/or RTC init (-s option), the sources
+    loaded from sourcedirs caused a crash due to failed assertion after
+    adding sources specified in the config.
+    
+    Ignore the reload sources command until chronyd enters the normal
+    operation mode.
+    
+    Fixes: 519796de3756 ("conf: add sourcedirs directive")
+
+diff --git a/conf.c b/conf.c
+index 6eae11c9..8849bdce 100644
+--- a/conf.c
++++ b/conf.c
+@@ -298,6 +298,8 @@ static ARR_Instance ntp_sources;
+ static ARR_Instance ntp_source_dirs;
+ /* Array of uint32_t corresponding to ntp_sources (for sourcedirs reload) */
+ static ARR_Instance ntp_source_ids;
++/* Flag indicating ntp_sources and ntp_source_ids are used for sourcedirs */
++static int conf_ntp_sources_added = 0;
+ 
+ /* Array of RefclockParameters */
+ static ARR_Instance refclock_sources;
+@@ -1689,8 +1691,12 @@ reload_source_dirs(void)
+   NSR_Status s;
+   int d, pass;
+ 
++  /* Ignore reload command before adding configured sources */
++  if (!conf_ntp_sources_added)
++    return;
++
+   prev_size = ARR_GetSize(ntp_source_ids);
+-  if (prev_size > 0 && ARR_GetSize(ntp_sources) != prev_size)
++  if (ARR_GetSize(ntp_sources) != prev_size)
+     assert(0);
+ 
+   /* Save the current sources and their configuration IDs */
+@@ -1859,7 +1865,10 @@ CNF_AddSources(void)
+     Free(source->params.name);
+   }
+ 
++  /* The arrays will be used for sourcedir (re)loading */
+   ARR_SetSize(ntp_sources, 0);
++  ARR_SetSize(ntp_source_ids, 0);
++  conf_ntp_sources_added = 1;
+ 
+   reload_source_dirs();
+ }
+diff --git a/test/simulation/203-initreload b/test/simulation/203-initreload
+new file mode 100755
+index 00000000..cf7924b8
+--- /dev/null
++++ b/test/simulation/203-initreload
+@@ -0,0 +1,26 @@
++#!/usr/bin/env bash
++
++. ./test.common
++
++check_config_h 'FEAT_CMDMON 1' || test_skip
++
++# Test fix "conf: don't load sourcedir during initstepslew and RTC init"
++
++test_start "reload during initstepslew"
++
++client_conf="initstepslew 5 192.168.123.1
++sourcedir tmp"
++client_server_conf="#"
++chronyc_conf="reload sources"
++chronyc_start=4
++
++echo 'server 192.168.123.1' > tmp/sources.sources
++
++run_test || test_fail
++check_chronyd_exit || test_fail
++check_source_selection || test_fail
++check_sync || test_fail
++
++check_log_messages "Added source 192\.168\.123\.1" 1 1 || test_fail
++
++test_pass
