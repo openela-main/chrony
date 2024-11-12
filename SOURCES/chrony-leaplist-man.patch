@@ -1,0 +1,42 @@
+--- chrony-4.5/doc/chrony.conf.man.in	2023-12-05 14:26:13.000000000 +0100
++++ chrony.conf.man.in	2024-07-30 14:17:30.000000000 +0200
+@@ -908,9 +915,10 @@
+ .RS 4
+ This option indicates that the reference clock keeps time in TAI instead of UTC
+ and that \fBchronyd\fP should correct its offset by the current TAI\-UTC offset. The
+-\fBleapsectz\fP directive must be used with this option and the
+-database must be kept up to date in order for this correction to work as
+-expected. This option does not make sense with PPS refclocks.
++\fBleapsectz\fP or \fBleapseclist\fP directive must be
++used with this option and the database must be kept up to date in order for
++this correction to work as expected. This option does not make sense with PPS
++refclocks.
+ .RE
+ .sp
+ \fBlocal\fP
+@@ -1652,6 +1660,25 @@
+ .if n .RE
+ .RE
+ .sp
++\fBleapseclist\fP \fIfile\fP
++.RS 4
++This directive specifies the path to a file containing a list of leap seconds
++and TAI\-UTC offsets in NIST/IERS format. It is recommended to use
++the file \fIleap\-seconds.list\fP usually included with the system timezone
++database. The behaviour of this directive is otherwise equivalent to
++\fBleapsectz\fP.
++.sp
++An example of this directive is:
++.sp
++.if n .RS 4
++.nf
++.fam C
++leapseclist /usr/share/zoneinfo/leap\-seconds.list
++.fam
++.fi
++.if n .RE
++.RE
++.sp
+ \fBmakestep\fP \fIthreshold\fP \fIlimit\fP
+ .RS 4
+ Normally \fBchronyd\fP will cause the system to gradually correct any time offset,

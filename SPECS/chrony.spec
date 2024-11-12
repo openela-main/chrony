@@ -9,7 +9,7 @@
 
 Name:           chrony
 Version:        4.5
-Release:        1%{?dist}
+Release:        3%{?dist}
 Summary:        An NTP client/server
 
 License:        GPLv2
@@ -31,6 +31,14 @@ Patch2:         chrony-keys.patch
 Patch3:         chrony-services.patch
 # fix serverstats to correctly count authenticated packets
 Patch4:         chrony-serverstats.patch
+# fix crash on reload command during start
+Patch5:         chrony-reload.patch
+# don't repeat error log messages when reloading sourcedir
+Patch6:         chrony-logreload.patch
+# add support for leap-seconds.list file
+Patch7:         chrony-leaplist.patch
+# update asciidoctor-generated man page
+Patch8:         chrony-leaplist-man.patch
 
 BuildRequires:  gnutls-devel libcap-devel libedit-devel pps-tools-devel
 BuildRequires:  gcc gcc-c++ make bison systemd gnupg2
@@ -65,6 +73,10 @@ service to other computers in the network.
 %patch2 -p1 -b .keys
 %patch3 -p1 -b .services
 %patch4 -p1 -b .serverstats
+%patch5 -p1
+%patch6 -p1
+%patch7 -p1
+%patch8 -p1
 
 %{?gitpatch: echo %{version}-%{gitpatch} > version.txt}
 
@@ -217,6 +229,13 @@ fi
 %dir %attr(750,chrony,chrony) %{_localstatedir}/log/chrony
 
 %changelog
+* Thu Aug 08 2024 Miroslav Lichvar <mlichvar@redhat.com> 4.5-3
+- don't repeat error log messages when reloading sourcedir (RHEL-51786)
+- add support for leap-seconds.list file (RHEL-53484)
+
+* Thu Jun 13 2024 Miroslav Lichvar <mlichvar@redhat.com> 4.5-2
+- fix crash on reload command during start (RHEL-28945)
+
 * Tue Jan 09 2024 Miroslav Lichvar <mlichvar@redhat.com> 4.5-1
 - update to 4.5 (RHEL-6522 RHEL-6520 RHEL-9969 RHEL-9971 RHEL-9973 RHEL-9975
   RHEL-12411)

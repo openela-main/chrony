@@ -1,0 +1,1304 @@
+commit 5035e5779503c2c38d09eb04f58480739828c6fa
+Author: Patrick Oppenlander <patrick.oppenlander@gmail.com>
+Date:   Thu Feb 8 14:36:25 2024 +1100
+
+    reference: move leap second source into leapdb
+    
+    Separate out source of leap second data into a new module in preparation
+    for supporting more sources such as leap-seconds.list.
+
+diff --git a/Makefile.in b/Makefile.in
+index 101e0c69..318109bb 100644
+--- a/Makefile.in
++++ b/Makefile.in
+@@ -37,7 +37,7 @@ GETDATE_CFLAGS = @GETDATE_CFLAGS@
+ 
+ EXTRA_OBJS = @EXTRA_OBJS@
+ 
+-OBJS = array.o cmdparse.o conf.o local.o logging.o main.o memory.o quantiles.o \
++OBJS = array.o cmdparse.o conf.o leapdb.o local.o logging.o main.o memory.o quantiles.o \
+        reference.o regress.o rtc.o samplefilt.o sched.o socket.o sources.o sourcestats.o \
+        stubs.o smooth.o sys.o sys_null.o tempcomp.o util.o $(EXTRA_OBJS)
+ 
+diff --git a/leapdb.c b/leapdb.c
+new file mode 100644
+index 00000000..676a0d5d
+--- /dev/null
++++ b/leapdb.c
+@@ -0,0 +1,147 @@
++/*
++  chronyd/chronyc - Programs for keeping computer clocks accurate.
++
++ **********************************************************************
++ * Copyright (C) Miroslav Lichvar  2009-2018, 2020, 2022
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of version 2 of the GNU General Public License as
++ * published by the Free Software Foundation.
++ *
++ * This program is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License along
++ * with this program; if not, write to the Free Software Foundation, Inc.,
++ * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
++ *
++ **********************************************************************
++
++  =======================================================================
++
++  This module provides leap second information. */
++
++#include "config.h"
++
++#include "sysincl.h"
++
++#include "conf.h"
++#include "leapdb.h"
++#include "logging.h"
++
++/* ================================================== */
++
++/* Name of a system timezone containing leap seconds occuring at midnight */
++static char *leap_tzname;
++
++/* ================================================== */
++
++static NTP_Leap
++get_tz_leap(time_t when, int *tai_offset)
++{
++  static time_t last_tz_leap_check;
++  static NTP_Leap tz_leap;
++  static int tz_tai_offset;
++
++  struct tm stm, *tm;
++  time_t t;
++  char *tz_env, tz_orig[128];
++
++  *tai_offset = tz_tai_offset;
++
++  /* Do this check at most twice a day */
++  when = when / (12 * 3600) * (12 * 3600);
++  if (last_tz_leap_check == when)
++      return tz_leap;
++
++  last_tz_leap_check = when;
++  tz_leap = LEAP_Normal;
++  tz_tai_offset = 0;
++
++  tm = gmtime(&when);
++  if (!tm)
++    return tz_leap;
++
++  stm = *tm;
++
++  /* Temporarily switch to the timezone containing leap seconds */
++  tz_env = getenv("TZ");
++  if (tz_env) {
++    if (strlen(tz_env) >= sizeof (tz_orig))
++      return tz_leap;
++    strcpy(tz_orig, tz_env);
++  }
++  setenv("TZ", leap_tzname, 1);
++  tzset();
++
++  /* Get the TAI-UTC offset, which started at the epoch at 10 seconds */
++  t = mktime(&stm);
++  if (t != -1)
++    tz_tai_offset = t - when + 10;
++
++  /* Set the time to 23:59:60 and see how it overflows in mktime() */
++  stm.tm_sec = 60;
++  stm.tm_min = 59;
++  stm.tm_hour = 23;
++
++  t = mktime(&stm);
++
++  if (tz_env)
++    setenv("TZ", tz_orig, 1);
++  else
++    unsetenv("TZ");
++  tzset();
++
++  if (t == -1)
++    return tz_leap;
++
++  if (stm.tm_sec == 60)
++    tz_leap = LEAP_InsertSecond;
++  else if (stm.tm_sec == 1)
++    tz_leap = LEAP_DeleteSecond;
++
++  *tai_offset = tz_tai_offset;
++
++  return tz_leap;
++}
++
++/* ================================================== */
++
++void
++LDB_Initialise(void)
++{
++  int tai_offset;
++
++  leap_tzname = CNF_GetLeapSecTimezone();
++  if (leap_tzname) {
++    /* Check that the timezone has good data for Jun 30 2012 and Dec 31 2012 */
++    if (get_tz_leap(1341014400, &tai_offset) == LEAP_InsertSecond && tai_offset == 34 &&
++        get_tz_leap(1356912000, &tai_offset) == LEAP_Normal && tai_offset == 35) {
++      LOG(LOGS_INFO, "Using %s timezone to obtain leap second data", leap_tzname);
++    } else {
++      LOG(LOGS_WARN, "Timezone %s failed leap second check, ignoring", leap_tzname);
++      leap_tzname = NULL;
++    }
++  }
++}
++
++/* ================================================== */
++
++NTP_Leap
++LDB_GetLeap(time_t when, int *tai_offset)
++{
++  *tai_offset = 0;
++  if (leap_tzname)
++    return get_tz_leap(when, tai_offset);
++  return LEAP_Normal;
++}
++
++/* ================================================== */
++
++void
++LDB_Finalise(void)
++{
++  /* Nothing to do */
++}
+diff --git a/leapdb.h b/leapdb.h
+new file mode 100644
+index 00000000..eab24141
+--- /dev/null
++++ b/leapdb.h
+@@ -0,0 +1,37 @@
++/*
++  chronyd/chronyc - Programs for keeping computer clocks accurate.
++
++ **********************************************************************
++ * Copyright (C) Patrick Oppenlander 2023
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of version 2 of the GNU General Public License as
++ * published by the Free Software Foundation.
++ *
++ * This program is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License along
++ * with this program; if not, write to the Free Software Foundation, Inc.,
++ * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
++ *
++ **********************************************************************
++
++  =======================================================================
++
++  This module provides leap second information.
++
++  */
++
++#ifndef GOT_LEAPDB_H
++#define GOT_LEAPDB_H
++
++#include "ntp.h"
++
++extern void LDB_Initialise(void);
++extern NTP_Leap LDB_GetLeap(time_t when, int *tai_offset);
++extern void LDB_Finalise(void);
++
++#endif /* GOT_LEAPDB_H */
+diff --git a/main.c b/main.c
+index 21d0fe7f..cb240640 100644
+--- a/main.c
++++ b/main.c
+@@ -32,6 +32,7 @@
+ 
+ #include "main.h"
+ #include "sched.h"
++#include "leapdb.h"
+ #include "local.h"
+ #include "sys.h"
+ #include "ntp_io.h"
+@@ -134,6 +135,7 @@ MAI_CleanupAndExit(void)
+   RCL_Finalise();
+   SRC_Finalise();
+   REF_Finalise();
++  LDB_Finalise();
+   RTC_Finalise();
+   SYS_Finalise();
+ 
+@@ -655,6 +657,7 @@ int main
+   if (!geteuid())
+     LOG(LOGS_WARN, "Running with root privileges");
+ 
++  LDB_Initialise();
+   REF_Initialise();
+   SST_Initialise();
+   NSR_Initialise();
+diff --git a/reference.c b/reference.c
+index 97dfbe98..1ac6cb93 100644
+--- a/reference.c
++++ b/reference.c
+@@ -33,6 +33,7 @@
+ #include "reference.h"
+ #include "util.h"
+ #include "conf.h"
++#include "leapdb.h"
+ #include "logging.h"
+ #include "local.h"
+ #include "sched.h"
+@@ -122,9 +123,6 @@ static int leap_in_progress;
+ /* Timer for the leap second handler */
+ static SCH_TimeoutID leap_timeout_id;
+ 
+-/* Name of a system timezone containing leap seconds occuring at midnight */
+-static char *leap_tzname;
+-
+ /* ================================================== */
+ 
+ static LOG_FileID logfileid;
+@@ -155,7 +153,6 @@ static int ref_adjustments;
+ 
+ /* ================================================== */
+ 
+-static NTP_Leap get_tz_leap(time_t when, int *tai_offset);
+ static void update_leap_status(NTP_Leap leap, time_t now, int reset);
+ 
+ /* ================================================== */
+@@ -195,7 +192,6 @@ REF_Initialise(void)
+   FILE *in;
+   double file_freq_ppm, file_skew_ppm;
+   double our_frequency_ppm;
+-  int tai_offset;
+ 
+   mode = REF_ModeNormal;
+   are_we_synchronised = 0;
+@@ -260,18 +256,6 @@ REF_Initialise(void)
+   if (leap_mode == REF_LeapModeSystem && !LCL_CanSystemLeap())
+     leap_mode = REF_LeapModeStep;
+ 
+-  leap_tzname = CNF_GetLeapSecTimezone();
+-  if (leap_tzname) {
+-    /* Check that the timezone has good data for Jun 30 2012 and Dec 31 2012 */
+-    if (get_tz_leap(1341014400, &tai_offset) == LEAP_InsertSecond && tai_offset == 34 &&
+-        get_tz_leap(1356912000, &tai_offset) == LEAP_Normal && tai_offset == 35) {
+-      LOG(LOGS_INFO, "Using %s timezone to obtain leap second data", leap_tzname);
+-    } else {
+-      LOG(LOGS_WARN, "Timezone %s failed leap second check, ignoring", leap_tzname);
+-      leap_tzname = NULL;
+-    }
+-  }
+-
+   CNF_GetMakeStep(&make_step_limit, &make_step_threshold);
+   CNF_GetMaxChange(&max_offset_delay, &max_offset_ignore, &max_offset);
+   CNF_GetMailOnChange(&do_mail_change, &mail_change_threshold, &mail_change_user);
+@@ -593,77 +577,6 @@ is_leap_second_day(time_t when)
+ 
+ /* ================================================== */
+ 
+-static NTP_Leap
+-get_tz_leap(time_t when, int *tai_offset)
+-{
+-  static time_t last_tz_leap_check;
+-  static NTP_Leap tz_leap;
+-  static int tz_tai_offset;
+-
+-  struct tm stm, *tm;
+-  time_t t;
+-  char *tz_env, tz_orig[128];
+-
+-  *tai_offset = tz_tai_offset;
+-
+-  /* Do this check at most twice a day */
+-  when = when / (12 * 3600) * (12 * 3600);
+-  if (last_tz_leap_check == when)
+-      return tz_leap;
+-
+-  last_tz_leap_check = when;
+-  tz_leap = LEAP_Normal;
+-  tz_tai_offset = 0;
+-
+-  tm = gmtime(&when);
+-  if (!tm)
+-    return tz_leap;
+-
+-  stm = *tm;
+-
+-  /* Temporarily switch to the timezone containing leap seconds */
+-  tz_env = getenv("TZ");
+-  if (tz_env) {
+-    if (strlen(tz_env) >= sizeof (tz_orig))
+-      return tz_leap;
+-    strcpy(tz_orig, tz_env);
+-  }
+-  setenv("TZ", leap_tzname, 1);
+-  tzset();
+-
+-  /* Get the TAI-UTC offset, which started at the epoch at 10 seconds */
+-  t = mktime(&stm);
+-  if (t != -1)
+-    tz_tai_offset = t - when + 10;
+-
+-  /* Set the time to 23:59:60 and see how it overflows in mktime() */
+-  stm.tm_sec = 60;
+-  stm.tm_min = 59;
+-  stm.tm_hour = 23;
+-
+-  t = mktime(&stm);
+-
+-  if (tz_env)
+-    setenv("TZ", tz_orig, 1);
+-  else
+-    unsetenv("TZ");
+-  tzset();
+-
+-  if (t == -1)
+-    return tz_leap;
+-
+-  if (stm.tm_sec == 60)
+-    tz_leap = LEAP_InsertSecond;
+-  else if (stm.tm_sec == 1)
+-    tz_leap = LEAP_DeleteSecond;
+-
+-  *tai_offset = tz_tai_offset;
+-
+-  return tz_leap;
+-}
+-
+-/* ================================================== */
+-
+ static void
+ leap_end_timeout(void *arg)
+ {
+@@ -751,16 +664,16 @@ set_leap_timeout(time_t now)
+ static void
+ update_leap_status(NTP_Leap leap, time_t now, int reset)
+ {
+-  NTP_Leap tz_leap;
++  NTP_Leap ldb_leap;
+   int leap_sec, tai_offset;
+ 
+   leap_sec = 0;
+   tai_offset = 0;
+ 
+-  if (leap_tzname && now) {
+-    tz_leap = get_tz_leap(now, &tai_offset);
++  if (now) {
++    ldb_leap = LDB_GetLeap(now, &tai_offset);
+     if (leap == LEAP_Normal)
+-      leap = tz_leap;
++      leap = ldb_leap;
+   }
+ 
+   if (leap == LEAP_InsertSecond || leap == LEAP_DeleteSecond) {
+@@ -1398,7 +1311,7 @@ REF_GetTaiOffset(struct timespec *ts)
+ {
+   int tai_offset;
+ 
+-  get_tz_leap(ts->tv_sec, &tai_offset);
++  LDB_GetLeap(ts->tv_sec, &tai_offset);
+ 
+   return tai_offset;
+ }
+
+commit 5f45313e7b960ad5aa094e529533b563968c3d07
+Author: Patrick Oppenlander <patrick.oppenlander@gmail.com>
+Date:   Thu Feb 8 14:36:26 2024 +1100
+
+    leapdb: make twice per day check logic common
+    
+    We want to do the twice per day check regardless of the data source.
+    Move the check up one level from get_tz_leap() into LDB_GetLeap().
+
+diff --git a/leapdb.c b/leapdb.c
+index 676a0d5d..32f753aa 100644
+--- a/leapdb.c
++++ b/leapdb.c
+@@ -41,24 +41,10 @@ static char *leap_tzname;
+ static NTP_Leap
+ get_tz_leap(time_t when, int *tai_offset)
+ {
+-  static time_t last_tz_leap_check;
+-  static NTP_Leap tz_leap;
+-  static int tz_tai_offset;
+-
+   struct tm stm, *tm;
+   time_t t;
+   char *tz_env, tz_orig[128];
+-
+-  *tai_offset = tz_tai_offset;
+-
+-  /* Do this check at most twice a day */
+-  when = when / (12 * 3600) * (12 * 3600);
+-  if (last_tz_leap_check == when)
+-      return tz_leap;
+-
+-  last_tz_leap_check = when;
+-  tz_leap = LEAP_Normal;
+-  tz_tai_offset = 0;
++  NTP_Leap tz_leap = LEAP_Normal;
+ 
+   tm = gmtime(&when);
+   if (!tm)
+@@ -79,7 +65,7 @@ get_tz_leap(time_t when, int *tai_offset)
+   /* Get the TAI-UTC offset, which started at the epoch at 10 seconds */
+   t = mktime(&stm);
+   if (t != -1)
+-    tz_tai_offset = t - when + 10;
++    *tai_offset = t - when + 10;
+ 
+   /* Set the time to 23:59:60 and see how it overflows in mktime() */
+   stm.tm_sec = 60;
+@@ -102,8 +88,6 @@ get_tz_leap(time_t when, int *tai_offset)
+   else if (stm.tm_sec == 1)
+     tz_leap = LEAP_DeleteSecond;
+ 
+-  *tai_offset = tz_tai_offset;
+-
+   return tz_leap;
+ }
+ 
+@@ -132,10 +116,25 @@ LDB_Initialise(void)
+ NTP_Leap
+ LDB_GetLeap(time_t when, int *tai_offset)
+ {
+-  *tai_offset = 0;
++  static time_t last_ldb_leap_check;
++  static NTP_Leap ldb_leap;
++  static int ldb_tai_offset;
++
++  /* Do this check at most twice a day */
++  when = when / (12 * 3600) * (12 * 3600);
++  if (last_ldb_leap_check == when)
++    goto out;
++
++  last_ldb_leap_check = when;
++  ldb_leap = LEAP_Normal;
++  ldb_tai_offset = 0;
++
+   if (leap_tzname)
+-    return get_tz_leap(when, tai_offset);
+-  return LEAP_Normal;
++    ldb_leap = get_tz_leap(when, &ldb_tai_offset);
++
++out:
++  *tai_offset = ldb_tai_offset;
++  return ldb_leap;
+ }
+ 
+ /* ================================================== */
+
+commit c857cfbaa6c1d6a9e7dad454287a537f1e1dbab9
+Author: Patrick Oppenlander <patrick.oppenlander@gmail.com>
+Date:   Thu Feb 8 14:36:27 2024 +1100
+
+    leapdb: move source check into separate function
+    
+    The sanity checks are valid for all possible sources of leap second
+    information, so move them into a separate function check_leap_source().
+
+diff --git a/leapdb.c b/leapdb.c
+index 32f753aa..aa49b3c4 100644
+--- a/leapdb.c
++++ b/leapdb.c
+@@ -93,22 +93,32 @@ get_tz_leap(time_t when, int *tai_offset)
+ 
+ /* ================================================== */
+ 
++static int
++check_leap_source(NTP_Leap (*src)(time_t when, int *tai_offset))
++{
++  int tai_offset = 0;
++
++  /* Check that the leap second source has good data for Jun 30 2012 and Dec 31 2012 */
++  if (src(1341014400, &tai_offset) == LEAP_InsertSecond && tai_offset == 34 &&
++      src(1356912000, &tai_offset) == LEAP_Normal && tai_offset == 35)
++    return 1;
++
++  return 0;
++}
++
++/* ================================================== */
++
+ void
+ LDB_Initialise(void)
+ {
+-  int tai_offset;
+-
+   leap_tzname = CNF_GetLeapSecTimezone();
+-  if (leap_tzname) {
+-    /* Check that the timezone has good data for Jun 30 2012 and Dec 31 2012 */
+-    if (get_tz_leap(1341014400, &tai_offset) == LEAP_InsertSecond && tai_offset == 34 &&
+-        get_tz_leap(1356912000, &tai_offset) == LEAP_Normal && tai_offset == 35) {
+-      LOG(LOGS_INFO, "Using %s timezone to obtain leap second data", leap_tzname);
+-    } else {
+-      LOG(LOGS_WARN, "Timezone %s failed leap second check, ignoring", leap_tzname);
+-      leap_tzname = NULL;
+-    }
++  if (leap_tzname && !check_leap_source(get_tz_leap)) {
++    LOG(LOGS_WARN, "Timezone %s failed leap second check, ignoring", leap_tzname);
++    leap_tzname = NULL;
+   }
++
++  if (leap_tzname)
++    LOG(LOGS_INFO, "Using %s timezone to obtain leap second data", leap_tzname);
+ }
+ 
+ /* ================================================== */
+
+commit 8cee4481073854f98db2c8473f702b3df35a5e1c
+Author: Patrick Oppenlander <patrick.oppenlander@gmail.com>
+Date:   Thu Feb 8 14:36:28 2024 +1100
+
+    leapdb: support leap-seconds.list as second source
+    
+    The existing implementation of getting leap second information from a
+    timezone in get_tz_leap() relies on non-portable C library behaviour.
+    
+    Specifically, mktime is not required to return '60' in the tm_sec field
+    when a leap second is inserted leading to "Timezone right/UTC failed
+    leap second check, ignoring" errors on musl based systems.
+    
+    This patch adds support for getting leap second information from the
+    leap-seconds.list file included with tzdata and adds a new configuration
+    directive leapseclist to switch on the feature.
+    
+    (Removed chrony.conf.adoc patch to avoid triggering asciidoctor)
+
+diff --git a/conf.c b/conf.c
+index 522e235a..cb872ba9 100644
+--- a/conf.c
++++ b/conf.c
+@@ -249,6 +249,9 @@ static REF_LeapMode leapsec_mode = REF_LeapModeSystem;
+ /* Name of a system timezone containing leap seconds occuring at midnight */
+ static char *leapsec_tz = NULL;
+ 
++/* File name of leap seconds list, usually /usr/share/zoneinfo/leap-seconds.list */
++static char *leapsec_list = NULL;
++
+ /* Name of the user to which will be dropped root privileges. */
+ static char *user;
+ 
+@@ -471,6 +474,7 @@ CNF_Finalise(void)
+   Free(hwclock_file);
+   Free(keys_file);
+   Free(leapsec_tz);
++  Free(leapsec_list);
+   Free(logdir);
+   Free(bind_ntp_iface);
+   Free(bind_acq_iface);
+@@ -620,6 +624,8 @@ CNF_ParseLine(const char *filename, int number, char *line)
+     parse_leapsecmode(p);
+   } else if (!strcasecmp(command, "leapsectz")) {
+     parse_string(p, &leapsec_tz);
++  } else if (!strcasecmp(command, "leapseclist")) {
++    parse_string(p, &leapsec_list);
+   } else if (!strcasecmp(command, "local")) {
+     parse_local(p);
+   } else if (!strcasecmp(command, "lock_all")) {
+@@ -2387,6 +2393,14 @@ CNF_GetLeapSecTimezone(void)
+ 
+ /* ================================================== */
+ 
++char *
++CNF_GetLeapSecList(void)
++{
++  return leapsec_list;
++}
++
++/* ================================================== */
++
+ int
+ CNF_GetSchedPriority(void)
+ {
+diff --git a/conf.h b/conf.h
+index 58ebdeb0..4c0a7879 100644
+--- a/conf.h
++++ b/conf.h
+@@ -91,6 +91,7 @@ extern char *CNF_GetNtpSigndSocket(void);
+ extern char *CNF_GetPidFile(void);
+ extern REF_LeapMode CNF_GetLeapSecMode(void);
+ extern char *CNF_GetLeapSecTimezone(void);
++extern char *CNF_GetLeapSecList(void);
+ 
+ /* Value returned in ppm, as read from file */
+ extern double CNF_GetMaxUpdateSkew(void);
+diff --git a/leapdb.c b/leapdb.c
+index aa49b3c4..e748e001 100644
+--- a/leapdb.c
++++ b/leapdb.c
+@@ -3,6 +3,7 @@
+ 
+  **********************************************************************
+  * Copyright (C) Miroslav Lichvar  2009-2018, 2020, 2022
++ * Copyright (C) Patrick Oppenlander 2023, 2024
+  *
+  * This program is free software; you can redistribute it and/or modify
+  * it under the terms of version 2 of the GNU General Public License as
+@@ -30,11 +31,20 @@
+ #include "conf.h"
+ #include "leapdb.h"
+ #include "logging.h"
++#include "util.h"
+ 
+ /* ================================================== */
+ 
+-/* Name of a system timezone containing leap seconds occuring at midnight */
+-static char *leap_tzname;
++/* Source of leap second data */
++enum {
++  SRC_NONE,
++  SRC_TIMEZONE,
++  SRC_LIST,
++} leap_src;
++
++/* Offset between leap-seconds.list timestamp epoch and Unix epoch.
++   leap-seconds.list epoch is 1 Jan 1900, 00:00:00 */
++#define LEAP_SEC_LIST_OFFSET 2208988800
+ 
+ /* ================================================== */
+ 
+@@ -59,7 +69,7 @@ get_tz_leap(time_t when, int *tai_offset)
+       return tz_leap;
+     strcpy(tz_orig, tz_env);
+   }
+-  setenv("TZ", leap_tzname, 1);
++  setenv("TZ", CNF_GetLeapSecTimezone(), 1);
+   tzset();
+ 
+   /* Get the TAI-UTC offset, which started at the epoch at 10 seconds */
+@@ -93,6 +103,91 @@ get_tz_leap(time_t when, int *tai_offset)
+ 
+ /* ================================================== */
+ 
++static NTP_Leap
++get_list_leap(time_t when, int *tai_offset)
++{
++  FILE *f;
++  char line[1024];
++  NTP_Leap ret_leap = LEAP_Normal;
++  int ret_tai_offset = 0, prev_lsl_tai_offset = 10;
++  int64_t lsl_updated = 0, lsl_expiry = 0;
++  const char *leap_sec_list = CNF_GetLeapSecList();
++
++  if (!(f = UTI_OpenFile(NULL, leap_sec_list, NULL, 'r', 0))) {
++    LOG(LOGS_ERR, "Failed to open leap seconds list %s", leap_sec_list);
++    goto out;
++  }
++
++  /* Leap second happens at midnight */
++  when = (when / (24 * 3600) + 1) * (24 * 3600);
++
++  /* leap-seconds.list timestamps are relative to 1 Jan 1900, 00:00:00 */
++  when += LEAP_SEC_LIST_OFFSET;
++
++  while (fgets(line, sizeof line, f) > 0) {
++    int64_t lsl_when;
++    int lsl_tai_offset;
++    char *p;
++
++    /* Ignore blank lines */
++    for (p = line; *p && isspace(*p); ++p)
++      ;
++    if (!*p)
++      continue;
++
++    if (*line == '#') {
++      /* Update time line starts with #$ */
++      if (line[1] == '$' && sscanf(line + 2, "%"SCNd64, &lsl_updated) != 1)
++        goto error;
++      /* Expiration time line starts with #@ */
++      if (line[1] == '@' && sscanf(line + 2, "%"SCNd64, &lsl_expiry) != 1)
++        goto error;
++      /* Comment or a special comment we don't care about */
++      continue;
++    }
++
++    /* Leap entry */
++    if (sscanf(line, "%"SCNd64" %d", &lsl_when, &lsl_tai_offset) != 2)
++      goto error;
++
++    if (when == lsl_when) {
++      if (lsl_tai_offset > prev_lsl_tai_offset)
++        ret_leap = LEAP_InsertSecond;
++      else if (lsl_tai_offset < prev_lsl_tai_offset)
++        ret_leap = LEAP_DeleteSecond;
++      /* When is rounded to the end of the day, so offset hasn't changed yet! */
++      ret_tai_offset = prev_lsl_tai_offset;
++    } else if (when > lsl_when) {
++      ret_tai_offset = lsl_tai_offset;
++    }
++
++    prev_lsl_tai_offset = lsl_tai_offset;
++  }
++
++  /* Make sure the file looks sensible */
++  if (!feof(f) || !lsl_updated || !lsl_expiry)
++    goto error;
++
++  if (when >= lsl_expiry)
++    LOG(LOGS_WARN, "Leap second list %s needs update", leap_sec_list);
++
++  goto out;
++
++error:
++  if (f)
++    fclose(f);
++  LOG(LOGS_ERR, "Failed to parse leap seconds list %s", leap_sec_list);
++  return LEAP_Normal;
++
++out:
++  if (f)
++    fclose(f);
++  *tai_offset = ret_tai_offset;
++  return ret_leap;
++}
++
++/* ================================================== */
++
+ static int
+ check_leap_source(NTP_Leap (*src)(time_t when, int *tai_offset))
+ {
+@@ -111,14 +206,27 @@ check_leap_source(NTP_Leap (*src)(time_t when, int *tai_offset))
+ void
+ LDB_Initialise(void)
+ {
++  const char *leap_tzname, *leap_sec_list;
++
+   leap_tzname = CNF_GetLeapSecTimezone();
+   if (leap_tzname && !check_leap_source(get_tz_leap)) {
+     LOG(LOGS_WARN, "Timezone %s failed leap second check, ignoring", leap_tzname);
+     leap_tzname = NULL;
+   }
+ 
+-  if (leap_tzname)
++  leap_sec_list = CNF_GetLeapSecList();
++  if (leap_sec_list && !check_leap_source(get_list_leap)) {
++    LOG(LOGS_WARN, "Leap second list %s failed check, ignoring", leap_sec_list);
++    leap_sec_list = NULL;
++  }
++
++  if (leap_sec_list) {
++    LOG(LOGS_INFO, "Using leap second list %s", leap_sec_list);
++    leap_src = SRC_LIST;
++  } else if (leap_tzname) {
+     LOG(LOGS_INFO, "Using %s timezone to obtain leap second data", leap_tzname);
++    leap_src = SRC_TIMEZONE;
++  }
+ }
+ 
+ /* ================================================== */
+@@ -139,8 +247,16 @@ LDB_GetLeap(time_t when, int *tai_offset)
+   ldb_leap = LEAP_Normal;
+   ldb_tai_offset = 0;
+ 
+-  if (leap_tzname)
++  switch (leap_src) {
++  case SRC_NONE:
++    break;
++  case SRC_TIMEZONE:
+     ldb_leap = get_tz_leap(when, &ldb_tai_offset);
++    break;
++  case SRC_LIST:
++    ldb_leap = get_list_leap(when, &ldb_tai_offset);
++    break;
++  }
+ 
+ out:
+   *tai_offset = ldb_tai_offset;
+diff --git a/refclock.c b/refclock.c
+index 84f7439c..44ba6d5c 100644
+--- a/refclock.c
++++ b/refclock.c
+@@ -166,8 +166,8 @@ RCL_AddRefclock(RefclockParameters *params)
+   if (!inst->driver->init && !inst->driver->poll)
+     LOG_FATAL("refclock driver %s is not compiled in", params->driver_name);
+ 
+-  if (params->tai && !CNF_GetLeapSecTimezone())
+-    LOG_FATAL("refclock tai option requires leapsectz");
++  if (params->tai && !CNF_GetLeapSecList() && !CNF_GetLeapSecTimezone())
++    LOG_FATAL("refclock tai option requires leapseclist or leapsectz");
+ 
+   inst->data = NULL;
+   inst->driver_parameter = Strdup(params->driver_parameter);
+
+commit bb98f492ef7ecec5d9a33c3b18ff46ee4964d01d
+Author: Patrick Oppenlander <patrick.oppenlander@gmail.com>
+Date:   Thu Feb 8 14:36:29 2024 +1100
+
+    test: add leapdb unit test
+
+diff --git a/test/unit/leapdb.c b/test/unit/leapdb.c
+new file mode 100644
+index 00000000..509fc394
+--- /dev/null
++++ b/test/unit/leapdb.c
+@@ -0,0 +1,104 @@
++/*
++ **********************************************************************
++ * Copyright (C) Patrick Oppenlander 2023
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of version 2 of the GNU General Public License as
++ * published by the Free Software Foundation.
++ *
++ * This program is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License along
++ * with this program; if not, write to the Free Software Foundation, Inc.,
++ * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
++ *
++ **********************************************************************
++ */
++
++#include <leapdb.c>
++#include "test.h"
++
++struct test_vector {
++  time_t when;
++  int tai_offset;
++  NTP_Leap leap;
++  int fake;
++} tests[] = {
++  /* leapdb.list is a cut down version of leap-seconds.list */
++  {3439756800, 34, LEAP_InsertSecond, 0}, /* 1 Jan 2009 */
++  {3550089600, 35, LEAP_InsertSecond, 0}, /* 1 Jul 2012 */
++  {3644697600, 36, LEAP_InsertSecond, 0}, /* 1 Jul 2015 */
++  {3692217600, 37, LEAP_InsertSecond, 0}, /* 1 Jan 2017 */
++  {3786825600, 36, LEAP_DeleteSecond, 1}, /* 1 Jan 2020 fake in leapdb.list */
++};
++
++static void
++test_leap_source(NTP_Leap (*fn)(time_t when, int *tai_offset),
++                 int skip_fakes)
++{
++  int prev_tai_offset = 34;
++  for (int i = 0; i < sizeof tests / sizeof tests[0]; ++i) {
++    struct test_vector *t = tests + i;
++
++    NTP_Leap leap;
++    int tai_offset = -1;
++
++    /* Our unit test leapdb.list contains a fake entry removing a leap second.
++     * Skip this when testing with the right/UTC timezone using mktime(). */
++    if (skip_fakes && t->fake)
++      continue;
++
++    /* One second before leap second */
++    leap = fn(t->when - LEAP_SEC_LIST_OFFSET - 1, &tai_offset);
++    TEST_CHECK(leap == t->leap);
++    TEST_CHECK(tai_offset = prev_tai_offset);
++
++    /* Exactly on leap second */
++    leap = fn(t->when - LEAP_SEC_LIST_OFFSET, &tai_offset);
++    TEST_CHECK(leap == LEAP_Normal);
++    TEST_CHECK(tai_offset == t->tai_offset);
++
++    /* One second after leap second */
++    leap = fn(t->when - LEAP_SEC_LIST_OFFSET + 1, &tai_offset);
++    TEST_CHECK(leap == LEAP_Normal);
++    TEST_CHECK(tai_offset == t->tai_offset);
++
++    prev_tai_offset = t->tai_offset;
++  }
++}
++
++void
++test_unit(void)
++{
++  char conf[][100] = {
++    "leapsectz right/UTC",
++    "leapseclist leapdb.list"
++  };
++
++  CNF_Initialise(0, 0);
++  for (int i = 0; i < sizeof conf / sizeof conf[0]; i++)
++    CNF_ParseLine(NULL, i + 1, conf[i]);
++  LDB_Initialise();
++
++  if (check_leap_source(get_tz_leap)) {
++    DEBUG_LOG("testing get_tz_leap");
++    test_leap_source(get_tz_leap, 1);
++  } else {
++    DEBUG_LOG("Skipping get_tz_leap test. Either the right/UTC timezone is "
++	      "missing, or mktime() doesn't support leap seconds.");
++  }
++
++  DEBUG_LOG("testing get_list_leap");
++  TEST_CHECK(check_leap_source(get_list_leap));
++  test_leap_source(get_list_leap, 0);
++
++  /* This exercises the twice-per-day logic */
++  DEBUG_LOG("testing LDB_GetLeap");
++  test_leap_source(LDB_GetLeap, 1);
++
++  LDB_Finalise();
++  CNF_Finalise();
++}
+diff --git a/test/unit/leapdb.list b/test/unit/leapdb.list
+new file mode 100644
+index 00000000..5dc2188f
+--- /dev/null
++++ b/test/unit/leapdb.list
+@@ -0,0 +1,22 @@
++#
++# Cut down version of leap-seconds.list for unit test.
++#
++# Blank lines need to be ignored, so include a few for testing.
++# Whitespace errors on non-blank lines below are copied from the original file.
++#
++  	
++#	Leap second data update time
++#$	 3676924800
++#
++#	File update time
++#@	3928521600
++	  
++3439756800	34	# 1 Jan 2009
++3550089600	35	# 1 Jul 2012
++3644697600	36	# 1 Jul 2015
++3692217600	37	# 1 Jan 2017
++3786825600	36	# 1 Jan 2020 (fake entry to test negative leap second)
++
++#	FIPS 180-1 hash
++#	NOTE! this value has not been recomputed for this unit test file.
++#h 	16edd0f0 3666784f 37db6bdd e74ced87 59af48f1
+
+commit 8438f8cf3dec2f40d26198604817f1dbaf286f63
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Wed Feb 7 15:48:43 2024 +0100
+
+    test: improve 113-leapsecond and 124-tai tests
+    
+    Use leapseclist instead of leapsectz and test also negative leap
+    seconds. Add a test for leapsectz when the date command indicates
+    right/UTC is available on the system and mktime() works as expected.
+    Check TAI offset in the server's log.
+
+diff --git a/test/simulation/113-leapsecond b/test/simulation/113-leapsecond
+index 394440b7..63da734d 100755
+--- a/test/simulation/113-leapsecond
++++ b/test/simulation/113-leapsecond
+@@ -8,54 +8,86 @@ check_config_h 'FEAT_REFCLOCK 1' || test_skip
+ 
+ export CLKNETSIM_START_DATE=$(TZ=UTC date -d 'Dec 30 2008 0:00:00' +'%s')
+ 
+-leap=$[2 * 24 * 3600]
+ limit=$[4 * 24 * 3600]
+ client_start=$[2 * 3600]
+-server_conf="refclock SHM 0 dpoll 10 poll 10
+-leapsectz right/UTC"
+ refclock_jitter=1e-9
+-refclock_offset="(* -1.0 (equal 0.1 (max (sum 1.0) $leap) $leap))"
+ 
+-for leapmode in system step slew; do
+-	client_conf="leapsecmode $leapmode"
+-	if [ $leapmode = slew ]; then
+-		max_sync_time=$[$leap + 12]
+-	else
+-		max_sync_time=$[$leap]
+-	fi
++for dir in "+1" "-1"; do
++	leap=$[2 * 24 * 3600 + 1 + $dir]
++	server_conf="refclock SHM 0 dpoll 10 poll 10
++	leapseclist tmp/leap.list"
++	refclock_offset="(* $dir (equal 0.1 (max (sum 1.0) $leap) $leap))"
++
++	cat > tmp/leap.list <<-EOF
++		#$	3676924800
++		#@	3928521600
++		3345062400	33	# 1 Jan 2006
++		3439756800	$[33 - $dir]	# 1 Jan 2009 $(
++		[ "$dir" = "+1" ] && echo -e "\n3471292800	33\n3502828800	34")
++		3550089600	35	# 1 Jul 2012
++	EOF
++
++	for leapmode in system step slew; do
++		client_conf="leapsecmode $leapmode"
++		if [ $leapmode = slew ]; then
++			max_sync_time=$[2 * 24 * 3600 + 13]
++		else
++			max_sync_time=$[2 * 24 * 3600 + 1]
++		fi
++		min_sync_time=$[$max_sync_time - 2]
++
++		run_test || test_fail
++		check_chronyd_exit || test_fail
++		check_source_selection || test_fail
++		check_packet_interval || test_fail
++		check_sync || test_fail
++		check_file_messages "System clock TAI offset set to" 1 1 log.1 || test_fail
++		check_file_messages "System clock TAI offset set to 33" 1 1 log.1 || test_fail
++	done
++
++	client_server_options="trust"
++	client_conf="refclock SHM 0 dpoll 10 poll 10 delay 1e-3"
++	min_sync_time=$[$leap - 2]
++	max_sync_time=$[$leap]
+ 
+ 	run_test || test_fail
+ 	check_chronyd_exit || test_fail
+ 	check_source_selection || test_fail
+ 	check_packet_interval || test_fail
+ 	check_sync || test_fail
+-done
+ 
+-client_server_options="trust"
+-client_conf="refclock SHM 0 dpoll 10 poll 10 delay 1e-3"
++	client_server_options=""
++	client_conf="leapsecmode system"
++	min_sync_time=230000
++	max_sync_time=240000
+ 
+-run_test || test_fail
+-check_chronyd_exit || test_fail
+-check_source_selection || test_fail
+-check_packet_interval || test_fail
+-check_sync || test_fail
++	for smoothmode in "" "leaponly"; do
++		server_conf="refclock SHM 0 dpoll 10 poll 10
++		leapseclist tmp/leap.list
++		leapsecmode slew
++		smoothtime 400 0.001 $smoothmode"
+ 
+-client_server_options=""
+-client_conf="leapsecmode system"
+-min_sync_time=230000
+-max_sync_time=240000
++		run_test || test_fail
++		check_chronyd_exit || test_fail
++		check_source_selection || test_fail
++		check_packet_interval || test_fail
++		check_sync || test_fail
++	done
++done
+ 
+-for smoothmode in "" "leaponly"; do
++if TZ=right/UTC date -d 'Dec 31 2008 23:59:60' 2> /dev/null | grep :60; then
+ 	server_conf="refclock SHM 0 dpoll 10 poll 10
+-	leapsectz right/UTC
+-	leapsecmode slew
+-	smoothtime 400 0.001 $smoothmode"
++	leapsectz right/UTC"
++	refclock_offset="(* -1 (equal 0.1 (max (sum 1.0) $leap) $leap))"
++	client_conf="leapsecmode system"
++	min_sync_time=$[$leap - 2]
++	max_sync_time=$[$leap]
+ 
+ 	run_test || test_fail
+ 	check_chronyd_exit || test_fail
+ 	check_source_selection || test_fail
+ 	check_packet_interval || test_fail
+ 	check_sync || test_fail
+-done
++fi
+ 
+ test_pass
+diff --git a/test/simulation/124-tai b/test/simulation/124-tai
+index 97064f7c..0192e10f 100755
+--- a/test/simulation/124-tai
++++ b/test/simulation/124-tai
+@@ -18,10 +18,18 @@ servers=0
+ refclock_offset="(+ -34 (equal 0.1 (max (sum 1.0) $leap) $leap))"
+ client_conf="
+ refclock SHM 0 dpoll 0 poll 0 tai
+-leapsectz right/UTC
++leapseclist tmp/leap.list
+ leapsecmode ignore
+ maxchange 1e-3 1 0"
+ 
++cat > tmp/leap.list <<-EOF
++	#$	3676924800
++	#@	3928521600
++	3345062400	33	# 1 Jan 2006
++	3439756800	34	# 1 Jan 2009
++	3550089600	35	# 1 Jul 2012
++EOF
++
+ run_test || test_fail
+ check_chronyd_exit || test_fail
+ check_source_selection || test_fail
+@@ -33,7 +41,7 @@ time_offset=-1000
+ refclock_offset="(+ -34)"
+ client_conf="
+ refclock SHM 0 dpoll 0 poll 0 tai
+-leapsectz right/UTC
++leapseclist tmp/leap.list
+ makestep 1 1
+ maxchange 1e-3 1 0"
+ 
+
+commit 307060cf0c6358bcb4028a4a25d21930669293bf
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Mon Feb 12 14:42:03 2024 +0100
+
+    test: avoid C99-style declaration in for loop
+    
+    This fixes compilation without the -std=c99 option with an older gcc.
+
+diff --git a/test/unit/leapdb.c b/test/unit/leapdb.c
+index 509fc394..2344fb3d 100644
+--- a/test/unit/leapdb.c
++++ b/test/unit/leapdb.c
+@@ -77,9 +77,10 @@ test_unit(void)
+     "leapsectz right/UTC",
+     "leapseclist leapdb.list"
+   };
++  int i;
+ 
+   CNF_Initialise(0, 0);
+-  for (int i = 0; i < sizeof conf / sizeof conf[0]; i++)
++  for (i = 0; i < sizeof conf / sizeof conf[0]; i++)
+     CNF_ParseLine(NULL, i + 1, conf[i]);
+   LDB_Initialise();
+ 
+
+commit 0f99aa7a922c42fb66fd11652b18741382e339e8
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Mon Mar 11 11:59:11 2024 +0100
+
+    test: replace another C99-style declaration in for loop
+
+diff --git a/test/unit/leapdb.c b/test/unit/leapdb.c
+index 2344fb3d..f2f0228f 100644
+--- a/test/unit/leapdb.c
++++ b/test/unit/leapdb.c
+@@ -39,8 +39,9 @@ static void
+ test_leap_source(NTP_Leap (*fn)(time_t when, int *tai_offset),
+                  int skip_fakes)
+ {
+-  int prev_tai_offset = 34;
+-  for (int i = 0; i < sizeof tests / sizeof tests[0]; ++i) {
++  int i, prev_tai_offset = 34;
++
++  for (i = 0; i < sizeof tests / sizeof tests[0]; ++i) {
+     struct test_vector *t = tests + i;
+ 
+     NTP_Leap leap;
+
+commit 31986485138a008c113928941c5901c850e63dba
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Wed Apr 3 11:01:44 2024 +0200
+
+    leapdb: fix leapsec list processing with 32-bit time_t
+    
+    A 32-bit time_t value overflows when converted to the Y1900 epoch used
+    in the leapsec list. Use a 64-bit variable in get_list_leap() to fix the
+    comparisons on systems using 32-bit time_t.
+    
+    Fixes: 53823b9f1c07 ("leapdb: support leap-seconds.list as second source")
+
+diff --git a/leapdb.c b/leapdb.c
+index e748e001..f6b059e8 100644
+--- a/leapdb.c
++++ b/leapdb.c
+@@ -110,7 +110,7 @@ get_list_leap(time_t when, int *tai_offset)
+   char line[1024];
+   NTP_Leap ret_leap = LEAP_Normal;
+   int ret_tai_offset = 0, prev_lsl_tai_offset = 10;
+-  int64_t lsl_updated = 0, lsl_expiry = 0;
++  int64_t when1900, lsl_updated = 0, lsl_expiry = 0;
+   const char *leap_sec_list = CNF_GetLeapSecList();
+ 
+   if (!(f = UTI_OpenFile(NULL, leap_sec_list, NULL, 'r', 0))) {
+@@ -122,7 +122,7 @@ get_list_leap(time_t when, int *tai_offset)
+   when = (when / (24 * 3600) + 1) * (24 * 3600);
+ 
+   /* leap-seconds.list timestamps are relative to 1 Jan 1900, 00:00:00 */
+-  when += LEAP_SEC_LIST_OFFSET;
++  when1900 = when + LEAP_SEC_LIST_OFFSET;
+ 
+   while (fgets(line, sizeof line, f) > 0) {
+     int64_t lsl_when;
+@@ -150,14 +150,14 @@ get_list_leap(time_t when, int *tai_offset)
+     if (sscanf(line, "%"SCNd64" %d", &lsl_when, &lsl_tai_offset) != 2)
+       goto error;
+ 
+-    if (when == lsl_when) {
++    if (when1900 == lsl_when) {
+       if (lsl_tai_offset > prev_lsl_tai_offset)
+         ret_leap = LEAP_InsertSecond;
+       else if (lsl_tai_offset < prev_lsl_tai_offset)
+         ret_leap = LEAP_DeleteSecond;
+       /* When is rounded to the end of the day, so offset hasn't changed yet! */
+       ret_tai_offset = prev_lsl_tai_offset;
+-    } else if (when > lsl_when) {
++    } else if (when1900 > lsl_when) {
+       ret_tai_offset = lsl_tai_offset;
+     }
+ 
+@@ -168,7 +168,7 @@ get_list_leap(time_t when, int *tai_offset)
+   if (!feof(f) || !lsl_updated || !lsl_expiry)
+     goto error;
+ 
+-  if (when >= lsl_expiry)
++  if (when1900 >= lsl_expiry)
+     LOG(LOGS_WARN, "Leap second list %s needs update", leap_sec_list);
+ 
+   goto out;
+
+commit b5393d24e33cf9dd3a90b519735f959a12344be7
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Tue Jun 4 16:23:41 2024 +0200
+
+    test: make 124-tai more reliable
+    
+    Reported-by: Reinhard Max <max@suse.de>
+
+diff --git a/test/simulation/124-tai b/test/simulation/124-tai
+index 0192e10f..e8c909de 100755
+--- a/test/simulation/124-tai
++++ b/test/simulation/124-tai
+@@ -20,7 +20,7 @@ client_conf="
+ refclock SHM 0 dpoll 0 poll 0 tai
+ leapseclist tmp/leap.list
+ leapsecmode ignore
+-maxchange 1e-3 1 0"
++maxchange 1e-3 10 0"
+ 
+ cat > tmp/leap.list <<-EOF
+ 	#$	3676924800
+@@ -43,7 +43,7 @@ client_conf="
+ refclock SHM 0 dpoll 0 poll 0 tai
+ leapseclist tmp/leap.list
+ makestep 1 1
+-maxchange 1e-3 1 0"
++maxchange 1e-3 10 0"
+ 
+ run_test || test_fail
+ check_chronyd_exit || test_fail
+
+commit e48dfd722b4c299715207b78c027c651d08a5b08
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Thu Jul 25 15:32:44 2024 +0200
+
+    leapdb: add explicit cast to int64_t
+    
+    Add an explicit cast to int64_t to not rely on LEAP_SEC_LIST_OFFSET
+    not fitting in 32-bit time_t.
+
+diff --git a/leapdb.c b/leapdb.c
+index f6b059e8..e4b2f9f1 100644
+--- a/leapdb.c
++++ b/leapdb.c
+@@ -122,7 +122,7 @@ get_list_leap(time_t when, int *tai_offset)
+   when = (when / (24 * 3600) + 1) * (24 * 3600);
+ 
+   /* leap-seconds.list timestamps are relative to 1 Jan 1900, 00:00:00 */
+-  when1900 = when + LEAP_SEC_LIST_OFFSET;
++  when1900 = (int64_t)when + LEAP_SEC_LIST_OFFSET;
+ 
+   while (fgets(line, sizeof line, f) > 0) {
+     int64_t lsl_when;

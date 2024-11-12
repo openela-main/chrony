@@ -1,0 +1,291 @@
+commit 78707d0717db7f410b3b1e1d4ae13d5cbf863a5e
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Tue Aug 6 10:45:55 2024 +0200
+
+    test: extend 008-confload test
+
+diff --git a/test/system/008-confload b/test/system/008-confload
+index 7e806988..b978c190 100755
+--- a/test/system/008-confload
++++ b/test/system/008-confload
+@@ -77,7 +77,32 @@ check_chronyc_output "^[^=]*
+ .. 127\.123\.5\.3 *[05]   7 [^^]*
+ .. 127\.123\.5\.6 [^^]*$" || test_fail
+ 
++run_chronyc "reload sources" || test_fail
++run_chronyc "reload sources" || test_fail
++
++rm $TEST_DIR/conf5.d/{3,5,6}.sources
++echo "server 127.123.5.7" > $TEST_DIR/conf5.d/7.sources
++
++run_chronyc "reload sources" || test_fail
++
++run_chronyc "sources" || test_fail
++check_chronyc_output "^[^=]*
++=*
++.. 127\.123\.1\.1 [^^]*
++.. 127\.123\.1\.3 [^^]*
++.. 127\.123\.1\.4 [^^]*
++.. 127\.123\.3\.1 [^^]*
++.. 127\.123\.2\.2 [^^]*
++.. 127\.123\.2\.3 [^^]*
++.. 127\.123\.4\.4 [^^]*
++.. 127\.123\.1\.2 *[05]   6 [^^]*
++.. 127\.123\.5\.2 *[05]   5 [^^]*
++.. 127\.123\.5\.7 [^^]*$" || test_fail
++
++run_chronyc "reload sources" || test_fail
++
+ stop_chronyd || test_fail
+-check_chronyd_message_count "Could not add source" 1 1 || test_fail
++check_chronyd_message_count "Could not add source.*\.5\.5.*in use" 3 3 || test_fail
++check_chronyd_message_count "Could not add source" 3 3 || test_fail
+ 
+ test_pass
+
+commit 3cac849bbfdc02625969cb721207d5436dc03ee4
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Tue Aug 6 11:28:26 2024 +0200
+
+    conf: merge ntp_source_ids with ntp_sources
+    
+    Keep the configuration IDs of sources loaded from sourcedir in the
+    NTP_Source structure itself to simplify the code.
+    
+    (Rebased to 4.5)
+
+diff --git a/conf.c b/conf.c
+index 146389aa..dad874b0 100644
+--- a/conf.c
++++ b/conf.c
+@@ -287,15 +287,14 @@ typedef struct {
+   NTP_Source_Type type;
+   int pool;
+   CPS_NTP_Source params;
++  uint32_t conf_id;
+ } NTP_Source;
+ 
+ /* Array of NTP_Source */
+ static ARR_Instance ntp_sources;
+ /* Array of (char *) */
+ static ARR_Instance ntp_source_dirs;
+-/* Array of uint32_t corresponding to ntp_sources (for sourcedirs reload) */
+-static ARR_Instance ntp_source_ids;
+-/* Flag indicating ntp_sources and ntp_source_ids are used for sourcedirs */
++/* Flag indicating ntp_sources is used for sourcedirs after config load */
+ static int conf_ntp_sources_added = 0;
+ 
+ /* Array of RefclockParameters */
+@@ -396,7 +395,6 @@ CNF_Initialise(int r, int client_only)
+   init_sources = ARR_CreateInstance(sizeof (IPAddr));
+   ntp_sources = ARR_CreateInstance(sizeof (NTP_Source));
+   ntp_source_dirs = ARR_CreateInstance(sizeof (char *));
+-  ntp_source_ids = ARR_CreateInstance(sizeof (uint32_t));
+   refclock_sources = ARR_CreateInstance(sizeof (RefclockParameters));
+   broadcasts = ARR_CreateInstance(sizeof (NTP_Broadcast_Destination));
+ 
+@@ -456,7 +454,6 @@ CNF_Finalise(void)
+   ARR_DestroyInstance(init_sources);
+   ARR_DestroyInstance(ntp_sources);
+   ARR_DestroyInstance(ntp_source_dirs);
+-  ARR_DestroyInstance(ntp_source_ids);
+   ARR_DestroyInstance(refclock_sources);
+   ARR_DestroyInstance(broadcasts);
+ 
+@@ -825,6 +822,8 @@ parse_source(char *line, char *type, int fatal)
+   }
+ 
+   source.params.name = Strdup(source.params.name);
++  source.conf_id = 0;
++
+   ARR_AppendElement(ntp_sources, &source);
+ }
+ 
+@@ -1678,7 +1677,6 @@ reload_source_dirs(void)
+ {
+   NTP_Source *prev_sources, *new_sources, *source;
+   unsigned int i, j, prev_size, new_size, unresolved;
+-  uint32_t *prev_ids, *new_ids;
+   char buf[MAX_LINE_LENGTH];
+   NSR_Status s;
+   int d, pass;
+@@ -1687,13 +1685,9 @@ reload_source_dirs(void)
+   if (!conf_ntp_sources_added)
+     return;
+ 
+-  prev_size = ARR_GetSize(ntp_source_ids);
+-  if (ARR_GetSize(ntp_sources) != prev_size)
+-    assert(0);
++  prev_size = ARR_GetSize(ntp_sources);
+ 
+-  /* Save the current sources and their configuration IDs */
+-  prev_ids = MallocArray(uint32_t, prev_size);
+-  memcpy(prev_ids, ARR_GetElements(ntp_source_ids), prev_size * sizeof (prev_ids[0]));
++  /* Save the current sources */
+   prev_sources = MallocArray(NTP_Source, prev_size);
+   memcpy(prev_sources, ARR_GetElements(ntp_sources), prev_size * sizeof (prev_sources[0]));
+ 
+@@ -1711,8 +1705,6 @@ reload_source_dirs(void)
+ 
+   new_size = ARR_GetSize(ntp_sources);
+   new_sources = ARR_GetElements(ntp_sources);
+-  ARR_SetSize(ntp_source_ids, new_size);
+-  new_ids = ARR_GetElements(ntp_source_ids);
+   unresolved = 0;
+ 
+   LOG_SetContext(LOGC_SourceFile);
+@@ -1728,14 +1720,14 @@ reload_source_dirs(void)
+ 
+       /* Remove missing sources before adding others to avoid conflicts */
+       if (pass == 0 && d < 0 && prev_sources[i].params.name[0] != '\0') {
+-        NSR_RemoveSourcesById(prev_ids[i]);
++        NSR_RemoveSourcesById(prev_sources[i].conf_id);
+       }
+ 
+       /* Add new sources */
+       if (pass == 1 && d > 0) {
+         source = &new_sources[j];
+         s = NSR_AddSourceByName(source->params.name, source->params.port, source->pool,
+-                                source->type, &source->params.params, &new_ids[j]);
++                                source->type, &source->params.params, &source->conf_id);
+ 
+         if (s == NSR_UnresolvedName) {
+           unresolved++;
+@@ -1750,7 +1742,7 @@ reload_source_dirs(void)
+ 
+       /* Keep unchanged sources */
+       if (pass == 1 && d == 0)
+-        new_ids[j] = prev_ids[i];
++        new_sources[j].conf_id = prev_sources[i].conf_id;
+     }
+   }
+ 
+@@ -1759,7 +1751,6 @@ reload_source_dirs(void)
+   for (i = 0; i < prev_size; i++)
+     Free(prev_sources[i].params.name);
+   Free(prev_sources);
+-  Free(prev_ids);
+ 
+   if (unresolved > 0)
+     NSR_ResolveSources();
+@@ -1858,7 +1849,6 @@ CNF_AddSources(void)
+ 
+   /* The arrays will be used for sourcedir (re)loading */
+   ARR_SetSize(ntp_sources, 0);
+-  ARR_SetSize(ntp_source_ids, 0);
+   conf_ntp_sources_added = 1;
+ 
+   reload_source_dirs();
+
+commit 8126dbd2de30957de32ce3e55ce367b7145a4c33
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Tue Aug 6 12:56:39 2024 +0200
+
+    conf: save source status in sourcedir reload
+    
+    Save the NSR status when adding a source from a sourcedir and don't
+    hide sources that failed the addition by clearing their name.
+    
+    (Rebased to 4.5)
+
+diff --git a/conf.c b/conf.c
+index dad874b0..6020e880 100644
+--- a/conf.c
++++ b/conf.c
+@@ -287,6 +287,7 @@ typedef struct {
+   NTP_Source_Type type;
+   int pool;
+   CPS_NTP_Source params;
++  NSR_Status status;
+   uint32_t conf_id;
+ } NTP_Source;
+ 
+@@ -822,6 +823,7 @@ parse_source(char *line, char *type, int fatal)
+   }
+ 
+   source.params.name = Strdup(source.params.name);
++  source.status = NSR_NoSuchSource;
+   source.conf_id = 0;
+ 
+   ARR_AppendElement(ntp_sources, &source);
+@@ -1719,30 +1721,30 @@ reload_source_dirs(void)
+         d = i < prev_size ? -1 : 1;
+ 
+       /* Remove missing sources before adding others to avoid conflicts */
+-      if (pass == 0 && d < 0 && prev_sources[i].params.name[0] != '\0') {
++      if (pass == 0 && d < 0 && prev_sources[i].status == NSR_Success) {
+         NSR_RemoveSourcesById(prev_sources[i].conf_id);
+       }
+ 
+-      /* Add new sources */
+-      if (pass == 1 && d > 0) {
++      /* Add new sources and sources that could not be added before */
++      if (pass == 1 && (d > 0 || (d == 0 && prev_sources[i].status != NSR_Success))) {
+         source = &new_sources[j];
+         s = NSR_AddSourceByName(source->params.name, source->params.port, source->pool,
+                                 source->type, &source->params.params, &source->conf_id);
++        source->status = s;
+ 
+         if (s == NSR_UnresolvedName) {
+           unresolved++;
+         } else if (s != NSR_Success) {
+           LOG(LOGS_ERR, "Could not add source %s : %s",
+               source->params.name, NSR_StatusToString(s));
+-
+-          /* Mark the source as not present */
+-          source->params.name[0] = '\0';
+         }
+       }
+ 
+       /* Keep unchanged sources */
+-      if (pass == 1 && d == 0)
++      if (pass == 1 && d == 0) {
++        new_sources[j].status = prev_sources[i].status;
+         new_sources[j].conf_id = prev_sources[i].conf_id;
++      }
+     }
+   }
+ 
+
+commit 7cd5d065fc17a0ec871df2ffdc74caf6d16d9f6a
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Tue Aug 6 13:05:26 2024 +0200
+
+    conf: don't repeat error message when adding sourcedir source
+    
+    When a source from a configured sourcedir cannot be added (e.g. it is a
+    duplicate of another source), log the error message only on the first
+    attempt adding the source, until the source is removed and added to a
+    sourcedir again.
+    
+    This avoids spamming of the system log with error messages if the
+    reload sources command is called frequently (e.g. from a DHCP renewal
+    networking script).
+
+diff --git a/conf.c b/conf.c
+index 6020e880..522e235a 100644
+--- a/conf.c
++++ b/conf.c
+@@ -1734,7 +1734,7 @@ reload_source_dirs(void)
+ 
+         if (s == NSR_UnresolvedName) {
+           unresolved++;
+-        } else if (s != NSR_Success) {
++        } else if (s != NSR_Success && (d > 0 || s != prev_sources[i].status)) {
+           LOG(LOGS_ERR, "Could not add source %s : %s",
+               source->params.name, NSR_StatusToString(s));
+         }
+diff --git a/test/system/008-confload b/test/system/008-confload
+index b978c190..b107d709 100755
+--- a/test/system/008-confload
++++ b/test/system/008-confload
+@@ -102,7 +102,7 @@ check_chronyc_output "^[^=]*
+ run_chronyc "reload sources" || test_fail
+ 
+ stop_chronyd || test_fail
+-check_chronyd_message_count "Could not add source.*\.5\.5.*in use" 3 3 || test_fail
+-check_chronyd_message_count "Could not add source" 3 3 || test_fail
++check_chronyd_message_count "Could not add source.*\.5\.5.*in use" 1 1 || test_fail
++check_chronyd_message_count "Could not add source" 1 1 || test_fail
+ 
+ test_pass
