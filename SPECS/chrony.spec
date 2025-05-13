@@ -1,5 +1,5 @@
 %global _hardened_build 1
-%global clknetsim_ver 5d1dc0
+%global clknetsim_ver 40bb97
 %bcond_without debug
 %bcond_without nts
 
@@ -8,8 +8,8 @@
 %endif
 
 Name:           chrony
-Version:        4.5
-Release:        3%{?dist}
+Version:        4.6.1
+Release:        1%{?dist}
 Summary:        An NTP client/server
 
 License:        GPLv2
@@ -29,16 +29,10 @@ Patch1:         chrony-nm-dispatcher-dhcp.patch
 Patch2:         chrony-keys.patch
 # revert some hardening options in service files
 Patch3:         chrony-services.patch
-# fix serverstats to correctly count authenticated packets
-Patch4:         chrony-serverstats.patch
-# fix crash on reload command during start
-Patch5:         chrony-reload.patch
-# don't repeat error log messages when reloading sourcedir
-Patch6:         chrony-logreload.patch
-# add support for leap-seconds.list file
-Patch7:         chrony-leaplist.patch
-# update asciidoctor-generated man page
-Patch8:         chrony-leaplist-man.patch
+# revert upstream changes in packaged configuration examples
+Patch4:         chrony-defconfig.patch
+# keep PHC refclock reachable when dropping samples due to high delay
+Patch5:         chrony-refclkreach.patch
 
 BuildRequires:  gnutls-devel libcap-devel libedit-devel pps-tools-devel
 BuildRequires:  gcc gcc-c++ make bison systemd gnupg2
@@ -72,11 +66,8 @@ service to other computers in the network.
 %patch1 -p1 -b .nm-dispatcher-dhcp
 %patch2 -p1 -b .keys
 %patch3 -p1 -b .services
-%patch4 -p1 -b .serverstats
+%patch4 -p1 -b .defconfig
 %patch5 -p1
-%patch6 -p1
-%patch7 -p1
-%patch8 -p1
 
 %{?gitpatch: echo %{version}-%{gitpatch} > version.txt}
 
@@ -229,6 +220,14 @@ fi
 %dir %attr(750,chrony,chrony) %{_localstatedir}/log/chrony
 
 %changelog
+* Wed Nov 06 2024 Miroslav Lichvar <mlichvar@redhat.com> 4.6.1-1
+- update to 4.6.1 (RHEL-61877)
+- keep PHC refclock reachable when dropping samples due to high delay
+  (RHEL-65421)
+
+* Thu Sep 05 2024 Miroslav Lichvar <mlichvar@redhat.com> 4.6-1
+- update to 4.6 (RHEL-56964)
+
 * Thu Aug 08 2024 Miroslav Lichvar <mlichvar@redhat.com> 4.5-3
 - don't repeat error log messages when reloading sourcedir (RHEL-51786)
 - add support for leap-seconds.list file (RHEL-53484)

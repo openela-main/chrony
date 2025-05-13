@@ -1,0 +1,15 @@
+diff --git a/examples/chrony.conf.example2 b/examples/chrony.conf.example2
+index 03e7d47b..bf2bbdda 100644
+--- a/examples/chrony.conf.example2
++++ b/examples/chrony.conf.example2
+@@ -37,8 +37,8 @@ ntsdumpdir /var/lib/chrony
+ # Insert/delete leap seconds by slewing instead of stepping.
+ #leapsecmode slew
+ 
+-# Set the TAI-UTC offset of the system clock.
+-#leapseclist /usr/share/zoneinfo/leap-seconds.list
++# Get TAI-UTC offset and leap seconds from the system tz database.
++#leapsectz right/UTC
+ 
+ # Specify directory for log files.
+ logdir /var/log/chrony
