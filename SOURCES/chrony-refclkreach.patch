@@ -1,0 +1,226 @@
+commit b9b338a8df23927d8104f41ecb21baa3558de0cd
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Thu Oct 31 14:41:19 2024 +0100
+
+    refclock: rework update of reachability
+    
+    Update the reachability register of a refclock source by 1 if a valid
+    measurement is received by the drivers between source polls, and not
+    only when it is accumulated to sourcestats, similarly to how
+    reachability works with NTP sources.
+    
+    This avoids drops in the reported reachability when a PHC refclock is
+    dropping samples due to significant changes in the measured delay (e.g.
+    due to high PCIe load), or a PPS refclock dropping samples due to failed
+    lock.
+
+diff --git a/doc/chronyc.adoc b/doc/chronyc.adoc
+index 935f1da9..dea93c9f 100644
+--- a/doc/chronyc.adoc
++++ b/doc/chronyc.adoc
+@@ -364,9 +364,12 @@ a measurement is being made every 64 seconds. *chronyd* automatically varies
+ the polling rate in response to prevailing conditions.
+ *Reach*:::
+ This shows the source's reachability register printed as an octal number. The
+-register has 8 bits and is updated on every received or missed packet from
+-the source. A value of 377 indicates that a valid reply was received for all
+-from the last eight transmissions.
++register has 8 bits. It is shifted to left by one bit with each poll and it is
++updated by 1 when a valid NTP response, or just a sample in case of a reference
++clock, is received from the source. A value of 377 indicates that a valid
++response or sample was received for all of the last 8 polls. Note that samples
++can be dropped if they are not considered good enough for synchronisation, but
++the reachability register will still have 1s for their polls.
+ *LastRx*:::
+ This column shows how long ago the last good sample (which is shown in the next
+ column) was received from the source. Measurements that failed some tests are
+diff --git a/refclock.c b/refclock.c
+index 22d775a5..d14560fa 100644
+--- a/refclock.c
++++ b/refclock.c
+@@ -63,6 +63,7 @@ struct RCL_Instance_Record {
+   int driver_poll;
+   int driver_polled;
+   int poll;
++  int reached;
+   int leap_status;
+   int local;
+   int pps_forced;
+@@ -175,6 +176,7 @@ RCL_AddRefclock(RefclockParameters *params)
+   inst->driver_poll = params->driver_poll;
+   inst->poll = params->poll;
+   inst->driver_polled = 0;
++  inst->reached = 0;
+   inst->leap_status = LEAP_Normal;
+   inst->local = params->local;
+   inst->pps_forced = params->pps_forced;
+@@ -665,6 +667,12 @@ RCL_AddCookedPulse(RCL_Instance instance, struct timespec *cooked_time,
+   return 1;
+ }
+ 
++void
++RCL_UpdateReachability(RCL_Instance instance)
++{
++  instance->reached++;
++}
++
+ double
+ RCL_GetPrecision(RCL_Instance instance)
+ {
+@@ -792,6 +800,9 @@ poll_timeout(void *arg)
+   if (!(inst->driver->poll && inst->driver_polled < (1 << (inst->poll - inst->driver_poll)))) {
+     inst->driver_polled = 0;
+ 
++    SRC_UpdateReachability(inst->source, inst->reached > 0);
++    inst->reached = 0;
++
+     if (SPF_GetFilteredSample(inst->filter, &sample)) {
+       double local_freq, local_offset;
+       struct timespec local_ref_time;
+@@ -807,7 +818,6 @@ poll_timeout(void *arg)
+         inst->leap_status = LEAP_Unsynchronised;
+       }
+ 
+-      SRC_UpdateReachability(inst->source, 1);
+       SRC_UpdateStatus(inst->source, stratum, inst->leap_status);
+       SRC_AccumulateSample(inst->source, &sample);
+       SRC_SelectSource(inst->source);
+@@ -816,8 +826,6 @@ poll_timeout(void *arg)
+         follow_local(inst, &local_ref_time, local_freq, local_offset);
+ 
+       log_sample(inst, &sample.time, 1, 0, 0.0, sample.offset, sample.peer_dispersion);
+-    } else {
+-      SRC_UpdateReachability(inst->source, 0);
+     }
+   }
+ 
+diff --git a/refclock.h b/refclock.h
+index 40c852de..5fdbf9c7 100644
+--- a/refclock.h
++++ b/refclock.h
+@@ -81,6 +81,7 @@ extern int RCL_AddSample(RCL_Instance instance, struct timespec *sample_time,
+ extern int RCL_AddPulse(RCL_Instance instance, struct timespec *pulse_time, double second);
+ extern int RCL_AddCookedPulse(RCL_Instance instance, struct timespec *cooked_time,
+                               double second, double dispersion, double raw_correction);
++extern void RCL_UpdateReachability(RCL_Instance instance);
+ extern double RCL_GetPrecision(RCL_Instance instance);
+ extern int RCL_GetDriverPoll(RCL_Instance instance);
+ 
+diff --git a/refclock_phc.c b/refclock_phc.c
+index e12f2258..6c0914f6 100644
+--- a/refclock_phc.c
++++ b/refclock_phc.c
+@@ -154,6 +154,8 @@ static void process_ext_pulse(RCL_Instance instance, struct timespec *phc_ts)
+   }
+   phc->last_extts = *phc_ts;
+ 
++  RCL_UpdateReachability(instance);
++
+   if (!HCL_CookTime(phc->clock, phc_ts, &local_ts, &local_err))
+     return;
+ 
+@@ -204,6 +206,9 @@ static int phc_poll(RCL_Instance instance)
+   if (n_readings < 1)
+     return 0;
+ 
++  if (!phc->extpps)
++    RCL_UpdateReachability(instance);
++
+   if (!HCL_ProcessReadings(phc->clock, n_readings, readings, &phc_ts, &sys_ts, &phc_err))
+     return 0;
+ 
+diff --git a/refclock_pps.c b/refclock_pps.c
+index 880c13fc..f00b7ccb 100644
+--- a/refclock_pps.c
++++ b/refclock_pps.c
+@@ -143,6 +143,8 @@ static int pps_poll(RCL_Instance instance)
+ 
+   pps->last_seq = seq;
+ 
++  RCL_UpdateReachability(instance);
++
+   return RCL_AddPulse(instance, &ts, 1.0e-9 * ts.tv_nsec);
+ }
+ 
+diff --git a/refclock_shm.c b/refclock_shm.c
+index ee13e871..22e51820 100644
+--- a/refclock_shm.c
++++ b/refclock_shm.c
+@@ -109,6 +109,8 @@ static int shm_poll(RCL_Instance instance)
+ 
+   shm->valid = 0;
+ 
++  RCL_UpdateReachability(instance);
++
+   receive_ts.tv_sec = t.receiveTimeStampSec;
+   clock_ts.tv_sec = t.clockTimeStampSec;
+ 
+diff --git a/refclock_sock.c b/refclock_sock.c
+index 2da57ef5..49cf3559 100644
+--- a/refclock_sock.c
++++ b/refclock_sock.c
+@@ -129,6 +129,8 @@ static void read_sample(int sockfd, int event, void *anything)
+   UTI_TimevalToTimespec(&sample.tv, &sys_ts);
+   UTI_NormaliseTimespec(&sys_ts);
+ 
++  RCL_UpdateReachability(instance);
++
+   if (!UTI_IsTimeOffsetSane(&sys_ts, sample.offset))
+     return;
+ 
+diff --git a/test/simulation/106-refclock b/test/simulation/106-refclock
+index dedab9b8..3793bd86 100755
+--- a/test/simulation/106-refclock
++++ b/test/simulation/106-refclock
+@@ -114,6 +114,32 @@ Root delay      : 0\.000000001 seconds
+ 	rm -f tmp/refclocks.log
+ fi
+ 
++export CLKNETSIM_PHC_JITTER_OFF=$[2 * 25 * 492]
++export CLKNETSIM_PHC_JITTER_ON=$[2 * 25 * 8]
++export CLKNETSIM_PHC_JITTER=1e-6
++refclock_offset=0.0
++refclock_jitter=1e-9
++min_sync_time=5
++max_sync_time=7
++time_max_limit=1e-7
++time_rms_limit=1e-8
++client_conf="refclock PHC /dev/ptp0:nocrossts poll 0
++logdir tmp
++log refclocks"
++chronyc_start=500
++chronyc_conf="sources"
++
++run_test || test_fail
++check_chronyd_exit || test_fail
++check_source_selection || test_fail
++check_sync || test_fail
++check_chronyc_output "^MS.*
++=*
++#\* PHC0                          0   0   377     8 .*$" || test_fail
++
++unset CLKNETSIM_PHC_JITTER_OFF
++unset CLKNETSIM_PHC_JITTER_ON
++export CLKNETSIM_PHC_JITTER=1e-7
+ refclock_offset="(+ 0.399 (sum 1e-3))"
+ refclock_jitter=1e-6
+ servers=1
+diff -up chrony/doc/chronyc.man.orig chrony/doc/chronyc.man
+--- chrony/doc/chronyc.man.in.orig	2024-11-06 12:07:50.555216174 +0100
++++ chrony/doc/chronyc.man.in	2024-11-06 12:07:58.131217759 +0100
+@@ -535,9 +535,12 @@ the polling rate in response to prevaili
+ \fBReach\fP
+ .RS 4
+ This shows the source\(cqs reachability register printed as an octal number. The
+-register has 8 bits and is updated on every received or missed packet from
+-the source. A value of 377 indicates that a valid reply was received for all
+-from the last eight transmissions.
++register has 8 bits. It is shifted to left by one bit with each poll and it is
++updated by 1 when a valid NTP response, or just a sample in case of a reference
++clock, is received from the source. A value of 377 indicates that a valid
++response or sample was received for all of the last 8 polls. Note that samples
++can be dropped if they are not considered good enough for synchronisation, but
++the reachability register will still have 1s for their polls.
+ .RE
+ .sp
+ \fBLastRx\fP
