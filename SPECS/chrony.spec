@@ -1,5 +1,5 @@
 %global _hardened_build 1
-%global clknetsim_ver 40bb97
+%global clknetsim_ver cdd694
 %bcond_without debug
 %bcond_without nts
 
@@ -9,7 +9,7 @@
 
 Name:           chrony
 Version:        4.6.1
-Release:        1%{?dist}
+Release:        2%{?dist}
 Summary:        An NTP client/server
 
 License:        GPL-2.0-only
@@ -27,6 +27,15 @@ Source10:       https://gitlab.com/chrony/clknetsim/-/archive/master/clknetsim-%
 Patch1:         chrony-nm-dispatcher-dhcp.patch
 # keep PHC refclock reachable when dropping samples due to high delay
 Patch2:         chrony-refclkreach.patch
+# improve description of refresh directive
+Patch3:         chrony-docrefresh.patch
+# improve logging of selection failures
+Patch4:         chrony-logselect.patch
+# fix sourcedir reloading to not multiply sources
+Patch5:         chrony-sourcedir.patch
+
+# revert clknetsim changes in PHC breaking old refclock tests
+Patch20:        clknetsim-revert-phc.patch
 
 BuildRequires:  gnutls-devel libcap-devel libedit-devel pps-tools-devel
 BuildRequires:  gcc gcc-c++ make bison systemd gnupg2
@@ -62,6 +71,13 @@ service to other computers in the network.
 %{?gitpatch:%patch -P 0 -p1}
 %patch -P 1 -p1 -b .nm-dispatcher-dhcp
 %patch -P 2 -p1
+%patch -P 3 -p1 -b .docrefresh
+%patch -P 4 -p1
+%patch -P 5 -p1
+
+pushd clknetsim-*-%{clknetsim_ver}*
+%patch -P 20 -R -p1
+popd
 
 %{?gitpatch: echo %{version}-%{gitpatch} > version.txt}
 
@@ -209,6 +225,11 @@ fi
 %dir %attr(750,chrony,chrony) %{_localstatedir}/log/chrony
 
 %changelog
+* Wed Jun 04 2025 Miroslav Lichvar <mlichvar@redhat.com> 4.6.1-2
+- improve description of refresh directive (RHEL-91788)
+- improve logging of selection failures (RHEL-91787 RHEL-91789 RHEL-91791)
+- fix sourcedir reloading to not multiply sources (RHEL-95017)
+
 * Wed Nov 06 2024 Miroslav Lichvar <mlichvar@redhat.com> 4.6.1-1
 - update to 4.6.1 (RHEL-61876)
 - keep PHC refclock reachable when dropping samples due to high delay
