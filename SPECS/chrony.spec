@@ -1,5 +1,5 @@
 %global _hardened_build 1
-%global clknetsim_ver 40bb97
+%global clknetsim_ver cdd694
 %bcond_without debug
 %bcond_without nts
 
@@ -9,7 +9,7 @@
 
 Name:           chrony
 Version:        4.6.1
-Release:        1%{?dist}
+Release:        2%{?dist}
 Summary:        An NTP client/server
 
 License:        GPLv2
@@ -33,6 +33,15 @@ Patch3:         chrony-services.patch
 Patch4:         chrony-defconfig.patch
 # keep PHC refclock reachable when dropping samples due to high delay
 Patch5:         chrony-refclkreach.patch
+# improve description of refresh directive
+Patch6:         chrony-docrefresh.patch
+# improve logging of selection failures
+Patch7:         chrony-logselect.patch
+# fix sourcedir reloading to not multiply sources
+Patch8:         chrony-sourcedir.patch
+
+# revert clknetsim changes in PHC breaking old refclock tests
+Patch20:        clknetsim-revert-phc.patch
 
 BuildRequires:  gnutls-devel libcap-devel libedit-devel pps-tools-devel
 BuildRequires:  gcc gcc-c++ make bison systemd gnupg2
@@ -63,11 +72,18 @@ service to other computers in the network.
 %{gpgverify} --keyring=%{SOURCE2} --signature=%{SOURCE1} --data=%{SOURCE0}
 %setup -q -n %{name}-%{version}%{?prerelease} -a 10
 %{?gitpatch:%patch0 -p1}
-%patch1 -p1 -b .nm-dispatcher-dhcp
-%patch2 -p1 -b .keys
-%patch3 -p1 -b .services
-%patch4 -p1 -b .defconfig
-%patch5 -p1
+%patch -P 1 -p1 -b .nm-dispatcher-dhcp
+%patch -P 2 -p1 -b .keys
+%patch -P 3 -p1 -b .services
+%patch -P 4 -p1 -b .defconfig
+%patch -P 5 -p1
+%patch -P 6 -p1 -b .docrefresh
+%patch -P 7 -p1
+%patch -P 8 -p1
+
+pushd clknetsim-*-%{clknetsim_ver}*
+%patch -P 20 -R -p1
+popd
 
 %{?gitpatch: echo %{version}-%{gitpatch} > version.txt}
 
@@ -220,6 +236,12 @@ fi
 %dir %attr(750,chrony,chrony) %{_localstatedir}/log/chrony
 
 %changelog
+* Wed Jun 04 2025 Miroslav Lichvar <mlichvar@redhat.com> 4.6.1-2
+- improve description of refresh directive (RHEL-82096)
+- improve logging of selection failures (RHEL-80388 RHEL-80413 RHEL-80415)
+- fix sourcedir reloading to not multiply sources (RHEL-95016)
+- switch from patchX to patch -P X
+
 * Wed Nov 06 2024 Miroslav Lichvar <mlichvar@redhat.com> 4.6.1-1
 - update to 4.6.1 (RHEL-61877)
 - keep PHC refclock reachable when dropping samples due to high delay
