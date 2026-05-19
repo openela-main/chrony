@@ -36,3 +36,39 @@ index 72b028f2..57646950 100644
  IPAddressDeny=any
  LockPersonality=yes
 
+diff --git a/examples/chronyd-restricted.service b/examples/chronyd-restricted.service
+index 48f9a065..30ba7d9f 100644
+--- a/examples/chronyd-restricted.service
++++ b/examples/chronyd-restricted.service
+@@ -12,11 +12,10 @@ Conflicts=chronyd.service ntpd.service systemd-timesyncd.service
+ ConditionCapability=CAP_SYS_TIME
+ 
+ [Service]
+-Type=notify
++Type=forking
+ PIDFile=/run/chrony/chronyd.pid
+-Environment="OPTIONS="
+ EnvironmentFile=-/etc/sysconfig/chronyd
+-ExecStart=/usr/sbin/chronyd -n -U $OPTIONS
++ExecStart=/usr/sbin/chronyd -U $OPTIONS
+ 
+ User=chrony
+ LogsDirectory=chrony
+diff --git a/examples/chronyd.service b/examples/chronyd.service
+index b6b17426..a42eb92a 100644
+--- a/examples/chronyd.service
++++ b/examples/chronyd.service
+@@ -6,11 +6,10 @@ Conflicts=ntpd.service systemd-timesyncd.service
+ ConditionCapability=CAP_SYS_TIME
+ 
+ [Service]
+-Type=notify
++Type=forking
+ PIDFile=/run/chrony/chronyd.pid
+-Environment="OPTIONS="
+ EnvironmentFile=-/etc/sysconfig/chronyd
+-ExecStart=/usr/sbin/chronyd -n $OPTIONS
++ExecStart=/usr/sbin/chronyd $OPTIONS
+ 
+ CapabilityBoundingSet=~CAP_AUDIT_CONTROL CAP_AUDIT_READ CAP_AUDIT_WRITE
+ CapabilityBoundingSet=~CAP_BLOCK_SUSPEND CAP_KILL CAP_LEASE CAP_LINUX_IMMUTABLE

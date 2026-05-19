@@ -1,4 +1,3 @@
-diff --git a/examples/chrony.conf.example2 b/examples/chrony.conf.example2
 index 03e7d47b..bf2bbdda 100644
 --- a/examples/chrony.conf.example2
 +++ b/examples/chrony.conf.example2
@@ -13,3 +12,19 @@ index 03e7d47b..bf2bbdda 100644
  
  # Specify directory for log files.
  logdir /var/log/chrony
+index a257f54c..03e7d47b 100644
+--- a/examples/chrony.conf.example2
++++ b/examples/chrony.conf.example2
+@@ -1,10 +1,5 @@
+-# Note: The general recommendation for an NTP client is to have at least
+-# three NTP servers to be able to detect one server providing incorrect
+-# time (falseticker).
+-
+-# Use four public NTP servers from the pool.ntp.org project. If this
+-# host has a static public IP address, please consider joining the pool:
+-# https://www.ntppool.org/join.html
++# Use public servers from the pool.ntp.org project.
++# Please consider joining the pool (https://www.pool.ntp.org/join.html).
+ pool pool.ntp.org iburst
+ 
+ # Record the rate at which the system clock gains/losses time.
