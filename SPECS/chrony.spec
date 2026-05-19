@@ -1,5 +1,5 @@
 %global _hardened_build 1
-%global clknetsim_ver cdd694
+%global clknetsim_ver 6ee99f50dec8
 %bcond_without debug
 %bcond_without nts
 
@@ -8,7 +8,7 @@
 %endif
 
 Name:           chrony
-Version:        4.6.1
+Version:        4.8
 Release:        2%{?dist}
 Summary:        An NTP client/server
 
@@ -25,17 +25,10 @@ Source10:       https://gitlab.com/chrony/clknetsim/-/archive/master/clknetsim-%
 
 # add distribution-specific bits to DHCP dispatcher
 Patch1:         chrony-nm-dispatcher-dhcp.patch
-# keep PHC refclock reachable when dropping samples due to high delay
-Patch2:         chrony-refclkreach.patch
-# improve description of refresh directive
-Patch3:         chrony-docrefresh.patch
-# improve logging of selection failures
-Patch4:         chrony-logselect.patch
-# fix sourcedir reloading to not multiply sources
-Patch5:         chrony-sourcedir.patch
-
-# revert clknetsim changes in PHC breaking old refclock tests
-Patch20:        clknetsim-revert-phc.patch
+# revert upstream changes in packaged configuration examples
+Patch4:         chrony-defconfig.patch
+# make tests more reliable
+Patch5:         chrony-tests.patch
 
 BuildRequires:  gnutls-devel libcap-devel libedit-devel pps-tools-devel
 BuildRequires:  gcc gcc-c++ make bison systemd gnupg2
@@ -70,14 +63,8 @@ service to other computers in the network.
 %setup -q -n %{name}-%{version}%{?prerelease} -a 10
 %{?gitpatch:%patch -P 0 -p1}
 %patch -P 1 -p1 -b .nm-dispatcher-dhcp
-%patch -P 2 -p1
-%patch -P 3 -p1 -b .docrefresh
-%patch -P 4 -p1
+%patch -P 4 -p1 -b .defconfig
 %patch -P 5 -p1
-
-pushd clknetsim-*-%{clknetsim_ver}*
-%patch -P 20 -R -p1
-popd
 
 %{?gitpatch: echo %{version}-%{gitpatch} > version.txt}
 
@@ -88,8 +75,8 @@ md5sum -c <<-EOF | (! grep -v 'OK$')
         6a3178c4670de7de393d9365e2793740  examples/chrony.logrotate
         c3992e2f985550739cd1cd95f98c9548  examples/chrony.nm-dispatcher.dhcp
         4e85d36595727318535af3387411070c  examples/chrony.nm-dispatcher.onoffline
-        c11159b78b89684eca773db6236a9855  examples/chronyd.service
-        46fa3e2d42c8eb9c42e71095686c90ed  examples/chronyd-restricted.service
+        274a44cd51981d6d4d3a44dfc92c94ab  examples/chronyd.service
+        5ddbb8a8055f587cb6b0b462ca73ea46  examples/chronyd-restricted.service
 EOF
 
 # don't allow packaging without vendor zone
@@ -99,9 +86,14 @@ test -n "%{vendorzone}"
 # - use our vendor zone (2.*pool.ntp.org names include IPv6 addresses)
 # - enable leapsectz to get TAI-UTC offset and leap seconds from tzdata
 # - use NTP servers from DHCP
+# - on s390x use the STP reference clock instead of the pool
 sed -e 's|^\(pool \)\(pool.ntp.org\)|\12.%{vendorzone}\2|' \
     -e 's|#\(leapsectz\)|\1|' \
     -e 's|^pool.*pool.ntp.org.*|&\n\n# Use NTP servers from DHCP.\nsourcedir /run/chrony-dhcp|' \
+%ifarch s390x
+    -e 's|^pool |#&|' \
+    -e '1s|^|# Use the s390-specific Server Time Protocol (STP) reference clock.\nrefclock PHC /dev/ptp_s390_stcke poll 2\n\n|' \
+%endif
         < examples/chrony.conf.example2 > chrony.conf
 
 touch -r examples/chrony.conf.example2 chrony.conf
@@ -124,6 +116,7 @@ mv clknetsim-*-%{clknetsim_ver}* test/simulation/clknetsim
         --chronyrundir=/run/chrony \
         --docdir=%{_docdir} \
         --with-ntp-era=$(date -d '1970-01-01 00:00:00+00:00' +'%s') \
+        --with-chronyc-user=root \
         --with-user=chrony \
         --with-hwclockfile=%{_sysconfdir}/adjtime \
         --with-pidfile=/run/chrony/chronyd.pid \
@@ -225,6 +218,12 @@ fi
 %dir %attr(750,chrony,chrony) %{_localstatedir}/log/chrony
 
 %changelog
+* Thu Nov 20 2025 Miroslav Lichvar <mlichvar@redhat.com> 4.8-2
+- change default chrony.conf on s390x to use STP refclock (RHEL-62844)
+
+* Thu Nov 20 2025 Miroslav Lichvar <mlichvar@redhat.com> 4.8-1
+- update to 4.8 (RHEL-112593)
+
 * Wed Jun 04 2025 Miroslav Lichvar <mlichvar@redhat.com> 4.6.1-2
 - improve description of refresh directive (RHEL-91788)
 - improve logging of selection failures (RHEL-91787 RHEL-91789 RHEL-91791)

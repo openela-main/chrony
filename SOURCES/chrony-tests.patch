@@ -1,0 +1,23 @@
+commit a0f460569eae04ee491585b7a9cc7dc2eec44d64
+Author: Miroslav Lichvar <mlichvar@redhat.com>
+Date:   Mon Oct 27 15:57:05 2025 +0100
+
+    test: make 007-cmdmon test even more reliable
+    
+    The last hit value in the clients report may be "-", because there is
+    a backward step of the clock caused by the doffset and reset sources
+    commands.
+
+diff --git a/test/system/007-cmdmon b/test/system/007-cmdmon
+index 4660ffad..3fd88fa3 100755
+--- a/test/system/007-cmdmon
++++ b/test/system/007-cmdmon
+@@ -68,7 +68,7 @@ check_chronyc_output "^Name/IP address             Mode KeyID Type KLen Last Atm
+ run_chronyc "clients" || test_fail
+ check_chronyc_output "^Hostname                      NTP   Drop Int IntL Last     Cmd   Drop Int  Last
+ ===============================================================================
+-.*127\.0\.0\.1               [0-9 ]+    0 [-0-9 ]+   -  [ 0-9]+       0      0   -     -.*$" \
++.*127\.0\.0\.1               [0-9 ]+    0 [-0-9 ]+   -  [-0-9 ]+       0      0   -     -.*$" \
+ 	|| test_fail
+ 
+ run_chronyc "ntpdata $server" || test_fail
